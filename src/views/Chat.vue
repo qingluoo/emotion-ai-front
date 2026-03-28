@@ -46,6 +46,10 @@
         </div>
       </header>
 
+      <div v-if="uiNotice.message" :class="['chat-status', `status-${uiNotice.type}`]">
+        {{ uiNotice.message }}
+      </div>
+
       <div class="chat-window" ref="chatWindowRef">
         <div v-if="currentMessages.length === 0" class="chat-empty">
           这是一个安全的空间，你可以随时和我说说你现在的感受。
@@ -113,6 +117,10 @@ const input = ref('');
 const sending = ref(false);
 const recording = ref(false);
 const recognizing = ref(false);
+const uiNotice = reactive({
+  message: '',
+  type: 'info'
+});
 const thinkMode = ref(false);
 const voiceMode = ref(true);
 const thinkOnStyle = {
@@ -135,6 +143,7 @@ let mediaRecorder = null;
 let mediaStream = null;
 let recordingChunks = [];
 let recordingTriggeredByPress = false;
+let noticeTimer = null;
 const BROWSER_TTS_RATE = 1.25;
 
 const formatTime = () => {
@@ -203,6 +212,20 @@ const nextTickScroll = () => {
       el.scrollTop = el.scrollHeight;
     }
   });
+};
+
+const showNotice = (message, type = 'info', duration = 3200) => {
+  uiNotice.message = message;
+  uiNotice.type = type;
+  if (noticeTimer) {
+    clearTimeout(noticeTimer);
+  }
+  if (duration > 0) {
+    noticeTimer = setTimeout(() => {
+      uiNotice.message = '';
+      noticeTimer = null;
+    }, duration);
+  }
 };
 
 const startStream = (url, chatId, options = {}) => {
@@ -278,6 +301,7 @@ const startStream = (url, chatId, options = {}) => {
   eventNames.forEach(bindEvent);
 
   eventSource.onerror = () => {
+    showNotice('实时回复连接已中断', 'warning');
     closeStream();
   };
 };
@@ -322,6 +346,7 @@ const openEmotionStream = (message, chatId) => {
 
   eventSource.addEventListener('tts_error', (event) => {
     if (!event?.data) return;
+    showNotice('语音合成失败，已停止本段播报', 'warning');
     console.warn('TTS 事件错误:', event.data);
   });
 };
@@ -575,7 +600,7 @@ const startRecording = async () => {
     return;
   }
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-    alert('当前浏览器不支持录音');
+    showNotice('当前浏览器不支持录音', 'error', 4500);
     return;
   }
 
@@ -618,8 +643,11 @@ const startRecording = async () => {
         if (recognizedText) {
           input.value = recognizedText;
           await autoSendRecognizedText(recognizedText);
+        } else {
+          showNotice('未识别到清晰语音，请重试', 'warning');
         }
       } catch (e) {
+        showNotice('语音识别失败，请稍后重试', 'error', 4500);
         console.error('语音识别失败', e);
       } finally {
         recognizing.value = false;
@@ -629,6 +657,7 @@ const startRecording = async () => {
     mediaRecorder.start();
     recording.value = true;
   } catch (e) {
+    showNotice('麦克风权限获取失败，请检查浏览器设置', 'error', 4500);
     console.error('启动录音失败', e);
     stopMediaStream();
   }
@@ -660,6 +689,7 @@ const stopPressRecording = () => {
 const autoSendRecognizedText = async (text) => {
   const normalized = text?.trim();
   if (!normalized || !currentChatId.value) {
+    showNotice('当前没有可用会话，无法发送语音识别结果', 'warning');
     return;
   }
 
@@ -682,7 +712,12 @@ const autoSendRecognizedText = async (text) => {
 
 const handleSend = () => {
   const text = input.value.trim();
-  if (!text || !currentChatId.value) return;
+  if (!text || !currentChatId.value) {
+    if (!currentChatId.value) {
+      showNotice('当前没有可用会话，请先新建会话', 'warning');
+    }
+    return;
+  }
   sending.value = true;
   if (voiceMode.value) {
     ensureAudioContext();
@@ -827,6 +862,9 @@ onBeforeUnmount(() => {
   closeStream();
   stopAudioPlayback();
   recordingTriggeredByPress = false;
+  if (noticeTimer) {
+    clearTimeout(noticeTimer);
+  }
   stopRecording();
   stopMediaStream();
 });
