@@ -24,7 +24,7 @@
 
     <section class="chat-main">
       <header class="chat-header">
-        <h2>情景交流</h2>
+        <h2>情感交流</h2>
         <div class="chat-header-right">
           <button
             class="btn btn-ghost btn-small"
@@ -48,7 +48,7 @@
 
       <div class="chat-window" ref="chatWindowRef">
         <div v-if="currentMessages.length === 0" class="chat-empty">
-          这是一个安全的空间，可以随时和我说说你现在的感受。
+          这是一个安全的空间，你可以随时和我说说你现在的感受。
         </div>
         <div
           v-for="(msg, idx) in currentMessages"
@@ -73,13 +73,21 @@
           @keydown.enter.exact.prevent="handleSend"
         ></textarea>
         <div class="chat-input-actions">
-          <span class="tip">按 Enter 发送，Shift + Enter 换行</span>
+          <span :class="['tip', { 'tip-recording': recording }]">
+            {{ recording ? '正在录音，松开发送' : (recognizing ? '正在识别语音...' : '按 Enter 发送，Shift + Enter 换行，支持按住说话') }}
+          </span>
           <button
-            class="btn btn-ghost"
+            :class="['btn', 'btn-ghost', 'btn-record', { 'is-recording': recording, 'is-recognizing': recognizing }]"
             :disabled="sending || recognizing"
-            @click="toggleRecording"
+            @mousedown.prevent="startPressRecording"
+            @mouseup.prevent="stopPressRecording"
+            @mouseleave.prevent="stopPressRecording"
+            @touchstart.prevent="startPressRecording"
+            @touchend.prevent="stopPressRecording"
+            @touchcancel.prevent="stopPressRecording"
+            @click.prevent
           >
-            {{ recording ? '结束录音' : (recognizing ? '识别中...' : '语音输入') }}
+            {{ recording ? '松开结束' : (recognizing ? '识别中...' : '按住说话') }}
           </button>
           <button
             class="btn btn-primary"
@@ -126,6 +134,7 @@ let currentAudioSource = null;
 let mediaRecorder = null;
 let mediaStream = null;
 let recordingChunks = [];
+let recordingTriggeredByPress = false;
 const BROWSER_TTS_RATE = 1.25;
 
 const formatTime = () => {
@@ -158,12 +167,14 @@ const createSession = () => {
 
 const createNewChat = () => {
   closeStream();
+  stopAudioPlayback();
   createSession();
 };
 
 const switchChat = (id) => {
   if (id === currentChatId.value) return;
   closeStream();
+  stopAudioPlayback();
   currentChatId.value = id;
   saveToLocalStorage();
 };
@@ -235,14 +246,12 @@ const startStream = (url, chatId, options = {}) => {
     upsertAiMessage(aiBuffer);
   };
 
-  // 默认 message 事件（emotion_app/chat/stream 这种常见 SSE 用法）
   eventSource.onmessage = (event) => {
     if (!handleDefaultMessage) return;
     if (!event.data) return;
     appendChunk(event.data);
   };
 
-  // Manus：后端通过 "event:xxx" 推送自定义事件名
   const bindEvent = (name) => {
     eventSource.addEventListener(name, (event) => {
       const data = event?.data ?? '';
@@ -319,7 +328,6 @@ const openEmotionStream = (message, chatId) => {
 
 const openManusStream = (message, chatId) => {
   startStream(getManusChatStreamUrl(message), chatId, {
-    // 这些事件名与你后端示例一致；即使后端少发部分，也不会影响
     eventNames: [
       'start',
       'step_start',
@@ -563,13 +571,22 @@ const stopMediaStream = () => {
 };
 
 const startRecording = async () => {
+  if (recording.value || recognizing.value || sending.value) {
+    return;
+  }
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
     alert('当前浏览器不支持录音');
     return;
   }
 
   try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }
+    });
     const mimeType = resolveRecordingMimeType();
     mediaRecorder = mimeType ? new MediaRecorder(mediaStream, { mimeType }) : new MediaRecorder(mediaStream);
     recordingChunks = [];
@@ -598,7 +615,10 @@ const startRecording = async () => {
       try {
         const response = await recognizeSpeech(audioFile);
         const recognizedText = response?.data?.text || '';
-        input.value = recognizedText ? `${input.value}${input.value ? ' ' : ''}${recognizedText}` : input.value;
+        if (recognizedText) {
+          input.value = recognizedText;
+          await autoSendRecognizedText(recognizedText);
+        }
       } catch (e) {
         console.error('语音识别失败', e);
       } finally {
@@ -620,12 +640,44 @@ const stopRecording = () => {
   }
 };
 
-const toggleRecording = async () => {
-  if (recording.value) {
-    stopRecording();
+const startPressRecording = async () => {
+  closeStream();
+  stopAudioPlayback();
+  recordingTriggeredByPress = true;
+  await startRecording();
+};
+
+const stopPressRecording = () => {
+  if (!recordingTriggeredByPress) {
     return;
   }
-  await startRecording();
+  recordingTriggeredByPress = false;
+  if (recording.value) {
+    stopRecording();
+  }
+};
+
+const autoSendRecognizedText = async (text) => {
+  const normalized = text?.trim();
+  if (!normalized || !currentChatId.value) {
+    return;
+  }
+
+  sending.value = true;
+  appendMessage(currentChatId.value, 'user', normalized);
+  input.value = '';
+
+  closeStream();
+  stopAudioPlayback();
+  if (thinkMode.value) {
+    openManusStream(normalized, currentChatId.value);
+  } else {
+    openEmotionStream(normalized, currentChatId.value);
+  }
+
+  setTimeout(() => {
+    sending.value = false;
+  }, 300);
 };
 
 const handleSend = () => {
@@ -691,15 +743,15 @@ const mapConversationToSession = (conversation, index) => {
 const saveToLocalStorage = () => {
   try {
     const data = {
-      sessions: sessions,
+      sessions,
       messagesMap: Array.from(messagesMap.entries()),
       currentChatId: currentChatId.value,
-      sessionIndex: sessionIndex,
+      sessionIndex,
       voiceMode: voiceMode.value
     };
     localStorage.setItem('chatData', JSON.stringify(data));
   } catch (e) {
-    console.error('保存数据到localStorage失败', e);
+    console.error('保存数据到 localStorage 失败', e);
   }
 };
 
@@ -722,7 +774,7 @@ const loadFromLocalStorage = () => {
       return true;
     }
   } catch (e) {
-    console.error('从localStorage加载数据失败', e);
+    console.error('从 localStorage 加载数据失败', e);
   }
   return false;
 };
@@ -741,10 +793,8 @@ const loadInitialConversations = async () => {
     messagesMap.clear();
 
     const infoList = convs.map((conv, idx) => mapConversationToSession(conv, idx + 1));
-
     sessionIndex = sessions.length + 1;
 
-    // 选择最近更新的会话作为当前会话
     let latest = infoList[0];
     for (let i = 1; i < infoList.length; i++) {
       const cur = infoList[i];
@@ -776,8 +826,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   closeStream();
   stopAudioPlayback();
+  recordingTriggeredByPress = false;
   stopRecording();
   stopMediaStream();
 });
 </script>
-

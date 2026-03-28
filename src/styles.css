@@ -398,6 +398,45 @@ body {
   color: #9ca3af;
 }
 
+.tip-recording {
+  color: #dc2626;
+  font-weight: 700;
+}
+
+.btn-record {
+  min-width: 104px;
+}
+
+.btn-record.is-recording {
+  background: #dc2626;
+  color: #fff;
+  box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45);
+  animation: pulse-record 1.1s infinite;
+}
+
+.btn-record.is-recording:hover {
+  background: #dc2626;
+}
+
+.btn-record.is-recognizing {
+  background: #f59e0b;
+  color: #fff;
+}
+
+@keyframes pulse-record {
+  0% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45);
+  }
+
+  70% {
+    box-shadow: 0 0 0 12px rgba(220, 38, 38, 0);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0);
+  }
+}
+
 .page-growth {
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(0, 1.4fr);
