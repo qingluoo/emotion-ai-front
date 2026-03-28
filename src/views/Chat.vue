@@ -36,6 +36,14 @@
           </button>
           <button
             class="btn btn-ghost btn-small"
+            :style="callMode ? callOnStyle : null"
+            @click="toggleCallMode"
+            title="开启后，录音按钮会切换为点击开始/点击结束的通话模式"
+          >
+            Call {{ callMode ? 'ON' : 'OFF' }}
+          </button>
+          <button
+            class="btn btn-ghost btn-small"
             :style="thinkMode ? thinkOnStyle : null"
             @click="thinkMode = !thinkMode"
             title="开启后将调用 Manus 智能体接口"
@@ -74,6 +82,19 @@
             <div class="time">{{ msg.time }}</div>
           </div>
         </div>
+        <div
+          v-if="showLiveTranscriptMessage"
+          class="chat-message from-user is-live-transcript"
+        >
+          <div class="avatar">我</div>
+          <div class="bubble">
+            <div class="live-transcript-tag">
+              实时字幕
+            </div>
+            <div class="text">{{ liveTranscriptText }}</div>
+            <div class="time">{{ liveTranscriptStatusText }}</div>
+          </div>
+        </div>
       </div>
 
       <footer class="chat-input-area">
@@ -88,15 +109,15 @@
             {{ voiceTipText }}
           </span>
           <button
-            :class="['btn', 'btn-ghost', 'btn-record', { 'is-recording': isListening, 'is-recognizing': isRecognizing }]"
+            :class="['btn', 'btn-ghost', 'btn-record', { 'is-recording': isListening, 'is-recognizing': isRecognizing, 'is-call-mode': callMode }]"
             :disabled="isBusyForRecord"
-            @mousedown.prevent="startPressRecording"
-            @mouseup.prevent="stopPressRecording"
-            @mouseleave.prevent="stopPressRecording"
-            @touchstart.prevent="startPressRecording"
-            @touchend.prevent="stopPressRecording"
-            @touchcancel.prevent="stopPressRecording"
-            @click.prevent
+            @mousedown.prevent="handleRecordMouseDown"
+            @mouseup.prevent="handleRecordMouseUp"
+            @mouseleave.prevent="handleRecordMouseLeave"
+            @touchstart.prevent="handleRecordTouchStart"
+            @touchend.prevent="handleRecordTouchEnd"
+            @touchcancel.prevent="handleRecordTouchCancel"
+            @click.prevent="handleRecordClick"
           >
             {{ recordButtonText }}
           </button>
@@ -120,6 +141,7 @@ import {
   getChatStreamUrl,
   getChatStreamWithTtsUrl,
   getManusChatStreamUrl,
+  getRealtimeAsrWsUrl,
   recognizeSpeech
 } from '../api/emotionApp';
 
@@ -139,10 +161,15 @@ const currentMessages = ref([]);
 const input = ref('');
 const thinkMode = ref(false);
 const voiceMode = ref(true);
+const callMode = ref(false);
 const voiceState = ref(VOICE_STATES.IDLE);
 const uiNotice = reactive({
   message: '',
   type: 'info'
+});
+const callTranscript = reactive({
+  interim: '',
+  final: ''
 });
 
 const thinkOnStyle = {
@@ -152,6 +179,11 @@ const thinkOnStyle = {
 
 const voiceOnStyle = {
   background: '#0f766e',
+  color: '#fff'
+};
+
+const callOnStyle = {
+  background: '#b45309',
   color: '#fff'
 };
 
@@ -169,10 +201,13 @@ let mediaStream = null;
 let recordingChunks = [];
 let recordingTriggeredByPress = false;
 let noticeTimer = null;
-
+let realtimeAsrSocket = null;
+let realtimeAsrChatId = '';
+let pcmAudioContext = null;
+let pcmSourceNode = null;
+let pcmProcessorNode = null;
 const BROWSER_TTS_RATE = 1.25;
 
-const isIdle = computed(() => voiceState.value === VOICE_STATES.IDLE);
 const isListening = computed(() => voiceState.value === VOICE_STATES.LISTENING);
 const isRecognizing = computed(() => voiceState.value === VOICE_STATES.RECOGNIZING);
 const isThinking = computed(() => voiceState.value === VOICE_STATES.THINKING);
@@ -190,18 +225,48 @@ const voiceStateLabelMap = {
 };
 
 const voiceStateDescriptionMap = {
-  [VOICE_STATES.IDLE]: '可以输入文本，或按住说话开始语音输入',
-  [VOICE_STATES.LISTENING]: '正在采集麦克风输入，松开后会自动识别并发送',
+  [VOICE_STATES.IDLE]: '可以输入文本，或开始一轮语音输入',
+  [VOICE_STATES.LISTENING]: '正在采集麦克风输入，结束录音后会自动识别并发送',
   [VOICE_STATES.RECOGNIZING]: '语音已结束，正在进行语音识别',
   [VOICE_STATES.THINKING]: '识别完成，正在等待 AI 回复',
-  [VOICE_STATES.SPEAKING]: 'AI 正在语音播报，按住说话会立即打断',
+  [VOICE_STATES.SPEAKING]: 'AI 正在语音播报，开始下一轮录音会立即打断',
   [VOICE_STATES.ERROR]: '当前语音链路发生错误，请查看提示信息'
 };
 
 const voiceStateLabel = computed(() => voiceStateLabelMap[voiceState.value] || '空闲');
 const voiceStateDescription = computed(() => voiceStateDescriptionMap[voiceState.value] || '');
+const liveTranscriptText = computed(() => {
+  const finalPart = callTranscript.final.trim();
+  const interimPart = callTranscript.interim.trim();
+  const merged = [finalPart, interimPart].filter(Boolean).join(' ');
+  if (merged) {
+    return merged;
+  }
+  if (isListening.value) {
+    return '正在聆听...';
+  }
+  if (isRecognizing.value) {
+    return '正在整理语音...';
+  }
+  return '';
+});
+const showLiveTranscriptMessage = computed(() => callMode.value && (isListening.value || isRecognizing.value || !!liveTranscriptText.value));
+const liveTranscriptStatusText = computed(() => {
+  if (isListening.value) return '正在说话';
+  if (isRecognizing.value) return '识别中';
+  return '通话模式';
+});
 
 const voiceTipText = computed(() => {
+  if (callMode.value) {
+    if (isListening.value) return '通话模式已开启，再点一次结束录音';
+    if (isRecognizing.value) return '通话模式：正在识别语音...';
+    if (isThinking.value) return '通话模式：正在等待 AI 回复...';
+    if (isSpeaking.value) return '通话模式：点击录音按钮可立即打断并开始下一轮';
+    if (isErrorState.value) return '通话模式：语音链路异常，请查看上方提示';
+    return '通话模式：点击录音按钮开始说话，字幕由后端实时返回';
+  }
+
   if (isListening.value) return '正在录音，松开即发送';
   if (isRecognizing.value) return '正在识别语音...';
   if (isThinking.value) return '正在等待 AI 回复...';
@@ -211,6 +276,13 @@ const voiceTipText = computed(() => {
 });
 
 const recordButtonText = computed(() => {
+  if (callMode.value) {
+    if (isListening.value) return '结束通话输入';
+    if (isRecognizing.value) return '识别中...';
+    if (isThinking.value) return '等待中...';
+    return '开始通话输入';
+  }
+
   if (isListening.value) return '松开结束';
   if (isRecognizing.value) return '识别中...';
   if (isThinking.value) return '等待中...';
@@ -219,6 +291,11 @@ const recordButtonText = computed(() => {
 
 const setVoiceState = (nextState) => {
   voiceState.value = nextState;
+};
+
+const clearCallTranscript = () => {
+  callTranscript.interim = '';
+  callTranscript.final = '';
 };
 
 const resetVoiceStateIfQuiet = () => {
@@ -278,7 +355,8 @@ const saveToLocalStorage = () => {
       messagesMap: Array.from(messagesMap.entries()),
       currentChatId: currentChatId.value,
       sessionIndex,
-      voiceMode: voiceMode.value
+      voiceMode: voiceMode.value,
+      callMode: callMode.value
     };
     localStorage.setItem('chatData', JSON.stringify(data));
   } catch (e) {
@@ -305,6 +383,176 @@ const closeStream = () => {
   }
 };
 
+const floatTo16BitPcm = (input) => {
+  const output = new Int16Array(input.length);
+  for (let i = 0; i < input.length; i++) {
+    const sample = Math.max(-1, Math.min(1, input[i]));
+    output[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+  }
+  return output;
+};
+
+const downsampleBuffer = (buffer, inputSampleRate, outputSampleRate) => {
+  if (outputSampleRate === inputSampleRate) {
+    return floatTo16BitPcm(buffer);
+  }
+
+  const sampleRateRatio = inputSampleRate / outputSampleRate;
+  const newLength = Math.round(buffer.length / sampleRateRatio);
+  const result = new Int16Array(newLength);
+  let offsetResult = 0;
+  let offsetBuffer = 0;
+
+  while (offsetResult < result.length) {
+    const nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
+    let accum = 0;
+    let count = 0;
+    for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+      accum += buffer[i];
+      count++;
+    }
+    const sample = count > 0 ? accum / count : 0;
+    result[offsetResult] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+    offsetResult++;
+    offsetBuffer = nextOffsetBuffer;
+  }
+
+  return result;
+};
+
+const pcmToBase64 = (pcmSamples) => {
+  const uint8 = new Uint8Array(pcmSamples.buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < uint8.length; i += chunkSize) {
+    const chunk = uint8.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+};
+
+const sendRealtimeAsrMessage = (payload) => {
+  if (!realtimeAsrSocket || realtimeAsrSocket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  realtimeAsrSocket.send(JSON.stringify(payload));
+};
+
+const closeRealtimeAsrSocket = () => {
+  if (realtimeAsrSocket) {
+    try {
+      realtimeAsrSocket.close();
+    } catch (e) {
+      console.warn('close realtime ASR websocket failed', e);
+    }
+    realtimeAsrSocket = null;
+  }
+  realtimeAsrChatId = '';
+};
+
+const stopRealtimeAudioCapture = () => {
+  if (pcmProcessorNode) {
+    pcmProcessorNode.disconnect();
+    pcmProcessorNode.onaudioprocess = null;
+    pcmProcessorNode = null;
+  }
+  if (pcmSourceNode) {
+    pcmSourceNode.disconnect();
+    pcmSourceNode = null;
+  }
+  if (pcmAudioContext) {
+    pcmAudioContext.close().catch(() => {});
+    pcmAudioContext = null;
+  }
+};
+
+const stopRealtimeAsrFlow = () => {
+  stopRealtimeAudioCapture();
+  closeRealtimeAsrSocket();
+};
+
+const setupRealtimeAsrSocket = (chatId) => {
+  closeRealtimeAsrSocket();
+  const socket = new WebSocket(getRealtimeAsrWsUrl(chatId));
+  realtimeAsrSocket = socket;
+  realtimeAsrChatId = chatId;
+
+  socket.onopen = () => {
+    sendRealtimeAsrMessage({
+      type: 'start',
+      chatId
+    });
+  };
+
+  socket.onmessage = (event) => {
+    try {
+      const payload = JSON.parse(event.data);
+      switch (payload.type) {
+        case 'partial_transcript':
+          callTranscript.interim = payload.text || '';
+          break;
+        case 'final_transcript':
+          callTranscript.final = payload.text || '';
+          callTranscript.interim = '';
+          input.value = payload.text || '';
+          autoSendRecognizedText(payload.text || '');
+          break;
+        case 'speech_started':
+          setVoiceState(VOICE_STATES.LISTENING);
+          break;
+        case 'speech_stopped':
+          if (!isThinking.value) {
+            setVoiceState(VOICE_STATES.RECOGNIZING);
+          }
+          break;
+        case 'error':
+          markErrorState(payload.message || '实时语音识别失败');
+          break;
+        default:
+          break;
+      }
+    } catch (e) {
+      console.error('parse realtime ASR websocket message failed', e);
+    }
+  };
+
+  socket.onerror = () => {
+    markErrorState('实时语音识别连接失败');
+  };
+
+  socket.onclose = () => {
+    realtimeAsrSocket = null;
+  };
+};
+
+const startRealtimeAudioCapture = async (stream, chatId) => {
+  setupRealtimeAsrSocket(chatId);
+
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtx) {
+    throw new Error('AudioContext is not supported');
+  }
+
+  pcmAudioContext = new AudioCtx();
+  pcmSourceNode = pcmAudioContext.createMediaStreamSource(stream);
+  pcmProcessorNode = pcmAudioContext.createScriptProcessor(4096, 1, 1);
+  pcmProcessorNode.onaudioprocess = (event) => {
+    if (!realtimeAsrSocket || realtimeAsrSocket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    const inputData = event.inputBuffer.getChannelData(0);
+    const pcm16 = downsampleBuffer(inputData, pcmAudioContext.sampleRate, 16000);
+    sendRealtimeAsrMessage({
+      type: 'audio_chunk',
+      chatId,
+      audioBase64: pcmToBase64(pcm16)
+    });
+  };
+
+  pcmSourceNode.connect(pcmProcessorNode);
+  pcmProcessorNode.connect(pcmAudioContext.destination);
+};
+
 const stopAudioPlayback = () => {
   audioQueue = [];
   if (currentAudioSource) {
@@ -329,6 +577,7 @@ const stopAudioPlayback = () => {
 const resetActiveVoiceFlow = () => {
   closeStream();
   stopAudioPlayback();
+  stopRealtimeAsrFlow();
   setVoiceState(VOICE_STATES.IDLE);
 };
 
@@ -705,6 +954,22 @@ const toggleVoiceMode = () => {
   saveToLocalStorage();
 };
 
+const toggleCallMode = () => {
+  callMode.value = !callMode.value;
+  if (callMode.value) {
+    voiceMode.value = true;
+    clearCallTranscript();
+    showNotice('已进入通话模式，实时字幕将由后端返回', 'info');
+  } else {
+    if (isListening.value) {
+      stopRecording();
+    }
+    stopRealtimeAsrFlow();
+    showNotice('已退出通话模式，恢复按住说话', 'info');
+  }
+  saveToLocalStorage();
+};
+
 const resolveRecordingMimeType = () => {
   const candidates = [
     'audio/webm;codecs=opus',
@@ -723,6 +988,16 @@ const stopMediaStream = () => {
 };
 
 const stopRecording = () => {
+  if (callMode.value) {
+    sendRealtimeAsrMessage({
+      type: 'stop',
+      chatId: currentChatId.value
+    });
+    stopMediaStream();
+    stopRealtimeAudioCapture();
+    setVoiceState(VOICE_STATES.RECOGNIZING);
+    return;
+  }
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop();
   }
@@ -732,7 +1007,7 @@ const startRecording = async () => {
   if (isListening.value || isRecognizing.value || isThinking.value) {
     return;
   }
-  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+  if (!navigator.mediaDevices?.getUserMedia) {
     markErrorState('当前浏览器不支持录音');
     return;
   }
@@ -745,6 +1020,12 @@ const startRecording = async () => {
         autoGainControl: true
       }
     });
+
+    if (callMode.value) {
+      await startRealtimeAudioCapture(mediaStream, currentChatId.value);
+      setVoiceState(VOICE_STATES.LISTENING);
+      return;
+    }
 
     const mimeType = resolveRecordingMimeType();
     mediaRecorder = mimeType ? new MediaRecorder(mediaStream, { mimeType }) : new MediaRecorder(mediaStream);
@@ -773,7 +1054,7 @@ const startRecording = async () => {
 
       try {
         const response = await recognizeSpeech(audioFile);
-        const recognizedText = response?.data?.text || '';
+        const recognizedText = response?.data?.text?.trim() || '';
         if (recognizedText) {
           input.value = recognizedText;
           await autoSendRecognizedText(recognizedText);
@@ -795,25 +1076,82 @@ const startRecording = async () => {
     markErrorState('麦克风权限获取失败，请检查浏览器设置');
     console.error('启动录音失败', e);
     stopMediaStream();
+    stopRealtimeAsrFlow();
   }
 };
 
-const startPressRecording = async () => {
+const startVoiceTurn = async () => {
   closeStream();
   stopAudioPlayback();
   setVoiceState(VOICE_STATES.IDLE);
+  if (callMode.value) {
+    clearCallTranscript();
+  }
   recordingTriggeredByPress = true;
   await startRecording();
 };
 
-const stopPressRecording = () => {
-  if (!recordingTriggeredByPress) {
-    return;
-  }
+const stopVoiceTurn = () => {
   recordingTriggeredByPress = false;
   if (isListening.value) {
     stopRecording();
   }
+};
+
+const startPressRecording = async () => {
+  if (callMode.value) return;
+  await startVoiceTurn();
+};
+
+const stopPressRecording = () => {
+  if (callMode.value) return;
+  if (!recordingTriggeredByPress) {
+    return;
+  }
+  stopVoiceTurn();
+};
+
+const handleRecordClick = async () => {
+  if (!callMode.value) {
+    return;
+  }
+
+  if (isListening.value) {
+    stopVoiceTurn();
+    return;
+  }
+
+  await startVoiceTurn();
+};
+
+const handleRecordMouseDown = async () => {
+  if (callMode.value) return;
+  await startPressRecording();
+};
+
+const handleRecordMouseUp = () => {
+  if (callMode.value) return;
+  stopPressRecording();
+};
+
+const handleRecordMouseLeave = () => {
+  if (callMode.value) return;
+  stopPressRecording();
+};
+
+const handleRecordTouchStart = async () => {
+  if (callMode.value) return;
+  await startPressRecording();
+};
+
+const handleRecordTouchEnd = () => {
+  if (callMode.value) return;
+  stopPressRecording();
+};
+
+const handleRecordTouchCancel = () => {
+  if (callMode.value) return;
+  stopPressRecording();
 };
 
 const autoSendRecognizedText = async (text) => {
@@ -911,6 +1249,9 @@ const loadFromLocalStorage = () => {
       if (typeof data.voiceMode === 'boolean') {
         voiceMode.value = data.voiceMode;
       }
+      if (typeof data.callMode === 'boolean') {
+        callMode.value = data.callMode;
+      }
       return true;
     }
   } catch (e) {
@@ -967,6 +1308,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   closeStream();
   stopAudioPlayback();
+  stopRealtimeAsrFlow();
   recordingTriggeredByPress = false;
   if (noticeTimer) {
     clearTimeout(noticeTimer);
