@@ -30,7 +30,7 @@
             class="btn btn-ghost btn-small"
             :style="voiceMode ? voiceOnStyle : null"
             @click="toggleVoiceMode"
-            title="控制是否开启语音播放"
+            title="控制是否开启语音播报"
           >
             Voice {{ voiceMode ? 'ON' : 'OFF' }}
           </button>
@@ -45,6 +45,13 @@
           <span class="chat-id">当前会话 ID：{{ currentChatId }}</span>
         </div>
       </header>
+
+      <div class="voice-state-bar">
+        <span :class="['state-pill', `state-${voiceState}`]">
+          {{ voiceStateLabel }}
+        </span>
+        <span class="state-text">{{ voiceStateDescription }}</span>
+      </div>
 
       <div v-if="uiNotice.message" :class="['chat-status', `status-${uiNotice.type}`]">
         {{ uiNotice.message }}
@@ -77,12 +84,12 @@
           @keydown.enter.exact.prevent="handleSend"
         ></textarea>
         <div class="chat-input-actions">
-          <span :class="['tip', { 'tip-recording': recording }]">
-            {{ recording ? '正在录音，松开发送' : (recognizing ? '正在识别语音...' : '按 Enter 发送，Shift + Enter 换行，支持按住说话') }}
+          <span :class="['tip', { 'tip-recording': isListening }]">
+            {{ voiceTipText }}
           </span>
           <button
-            :class="['btn', 'btn-ghost', 'btn-record', { 'is-recording': recording, 'is-recognizing': recognizing }]"
-            :disabled="sending || recognizing"
+            :class="['btn', 'btn-ghost', 'btn-record', { 'is-recording': isListening, 'is-recognizing': isRecognizing }]"
+            :disabled="isBusyForRecord"
             @mousedown.prevent="startPressRecording"
             @mouseup.prevent="stopPressRecording"
             @mouseleave.prevent="stopPressRecording"
@@ -91,14 +98,14 @@
             @touchcancel.prevent="stopPressRecording"
             @click.prevent
           >
-            {{ recording ? '松开结束' : (recognizing ? '识别中...' : '按住说话') }}
+            {{ recordButtonText }}
           </button>
           <button
             class="btn btn-primary"
-            :disabled="sending || !input.trim()"
+            :disabled="isThinking || !input.trim()"
             @click="handleSend"
           >
-            {{ sending ? '发送中...' : '发送' }}
+            {{ isThinking ? '发送中...' : '发送' }}
           </button>
         </div>
       </footer>
@@ -107,31 +114,49 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
-import { getChatStreamUrl, getChatStreamWithTtsUrl, getAllConversations, getManusChatStreamUrl, recognizeSpeech } from '../api/emotionApp';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import {
+  getAllConversations,
+  getChatStreamUrl,
+  getChatStreamWithTtsUrl,
+  getManusChatStreamUrl,
+  recognizeSpeech
+} from '../api/emotionApp';
+
+const VOICE_STATES = {
+  IDLE: 'idle',
+  LISTENING: 'listening',
+  RECOGNIZING: 'recognizing',
+  THINKING: 'thinking',
+  SPEAKING: 'speaking',
+  ERROR: 'error'
+};
 
 const sessions = reactive([]);
 const messagesMap = reactive(new Map());
 const currentChatId = ref('');
+const currentMessages = ref([]);
 const input = ref('');
-const sending = ref(false);
-const recording = ref(false);
-const recognizing = ref(false);
+const thinkMode = ref(false);
+const voiceMode = ref(true);
+const voiceState = ref(VOICE_STATES.IDLE);
 const uiNotice = reactive({
   message: '',
   type: 'info'
 });
-const thinkMode = ref(false);
-const voiceMode = ref(true);
+
 const thinkOnStyle = {
   background: '#4f46e5',
   color: '#fff'
 };
+
 const voiceOnStyle = {
   background: '#0f766e',
   color: '#fff'
 };
+
 const chatWindowRef = ref(null);
+
 let eventSource = null;
 let sessionIndex = 1;
 let audioQueue = [];
@@ -144,7 +169,63 @@ let mediaStream = null;
 let recordingChunks = [];
 let recordingTriggeredByPress = false;
 let noticeTimer = null;
+
 const BROWSER_TTS_RATE = 1.25;
+
+const isIdle = computed(() => voiceState.value === VOICE_STATES.IDLE);
+const isListening = computed(() => voiceState.value === VOICE_STATES.LISTENING);
+const isRecognizing = computed(() => voiceState.value === VOICE_STATES.RECOGNIZING);
+const isThinking = computed(() => voiceState.value === VOICE_STATES.THINKING);
+const isSpeaking = computed(() => voiceState.value === VOICE_STATES.SPEAKING);
+const isErrorState = computed(() => voiceState.value === VOICE_STATES.ERROR);
+const isBusyForRecord = computed(() => isRecognizing.value || isThinking.value);
+
+const voiceStateLabelMap = {
+  [VOICE_STATES.IDLE]: '空闲',
+  [VOICE_STATES.LISTENING]: '录音中',
+  [VOICE_STATES.RECOGNIZING]: '识别中',
+  [VOICE_STATES.THINKING]: '思考中',
+  [VOICE_STATES.SPEAKING]: '播报中',
+  [VOICE_STATES.ERROR]: '异常'
+};
+
+const voiceStateDescriptionMap = {
+  [VOICE_STATES.IDLE]: '可以输入文本，或按住说话开始语音输入',
+  [VOICE_STATES.LISTENING]: '正在采集麦克风输入，松开后会自动识别并发送',
+  [VOICE_STATES.RECOGNIZING]: '语音已结束，正在进行语音识别',
+  [VOICE_STATES.THINKING]: '识别完成，正在等待 AI 回复',
+  [VOICE_STATES.SPEAKING]: 'AI 正在语音播报，按住说话会立即打断',
+  [VOICE_STATES.ERROR]: '当前语音链路发生错误，请查看提示信息'
+};
+
+const voiceStateLabel = computed(() => voiceStateLabelMap[voiceState.value] || '空闲');
+const voiceStateDescription = computed(() => voiceStateDescriptionMap[voiceState.value] || '');
+
+const voiceTipText = computed(() => {
+  if (isListening.value) return '正在录音，松开即发送';
+  if (isRecognizing.value) return '正在识别语音...';
+  if (isThinking.value) return '正在等待 AI 回复...';
+  if (isSpeaking.value) return 'AI 正在播报，按住说话会立即打断';
+  if (isErrorState.value) return '语音链路异常，请查看上方提示';
+  return '按 Enter 发送，Shift + Enter 换行，支持按住说话';
+});
+
+const recordButtonText = computed(() => {
+  if (isListening.value) return '松开结束';
+  if (isRecognizing.value) return '识别中...';
+  if (isThinking.value) return '等待中...';
+  return '按住说话';
+});
+
+const setVoiceState = (nextState) => {
+  voiceState.value = nextState;
+};
+
+const resetVoiceStateIfQuiet = () => {
+  if (!recordingTriggeredByPress && !isAudioPlaying && audioQueue.length === 0 && !isListening.value && !isRecognizing.value) {
+    setVoiceState(VOICE_STATES.IDLE);
+  }
+};
 
 const formatTime = () => {
   const d = new Date();
@@ -160,49 +241,6 @@ const formatTimeFromTimestamp = (ts) => {
   }
   const pad = (n) => (n < 10 ? `0${n}` : n);
   return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-};
-
-const createSession = () => {
-  const id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
-  sessions.unshift({
-    id,
-    index: sessionIndex++,
-    lastMessage: ''
-  });
-  messagesMap.set(id, []);
-  currentChatId.value = id;
-  saveToLocalStorage();
-};
-
-const createNewChat = () => {
-  closeStream();
-  stopAudioPlayback();
-  createSession();
-};
-
-const switchChat = (id) => {
-  if (id === currentChatId.value) return;
-  closeStream();
-  stopAudioPlayback();
-  currentChatId.value = id;
-  saveToLocalStorage();
-};
-
-const appendMessage = (chatId, role, content) => {
-  const list = messagesMap.get(chatId) || [];
-  const msg = {
-    role,
-    content,
-    time: formatTime()
-  };
-  list.push(msg);
-  messagesMap.set(chatId, list);
-  const session = sessions.find((s) => s.id === chatId);
-  if (session) {
-    session.lastMessage = content.slice(0, 30);
-  }
-  nextTickScroll();
-  saveToLocalStorage();
 };
 
 const nextTickScroll = () => {
@@ -228,144 +266,101 @@ const showNotice = (message, type = 'info', duration = 3200) => {
   }
 };
 
-const startStream = (url, chatId, options = {}) => {
-  const { eventNames = [], closeOnComplete = false, showEventName = false, handleDefaultMessage = true } = options;
-
-  eventSource = new EventSource(url);
-  let aiBuffer = '';
-
-  const upsertAiMessage = (content) => {
-    const list = messagesMap.get(chatId) || [];
-    const last = list[list.length - 1];
-
-    if (!last || last.role !== 'ai' || sending.value) {
-      const msg = {
-        role: 'ai',
-        content,
-        time: formatTime()
-      };
-      if (!last || last.role !== 'ai') {
-        list.push(msg);
-      } else {
-        last.content = content;
-        last.time = formatTime();
-      }
-      messagesMap.set(chatId, list);
-    } else {
-      last.content = content;
-    }
-
-    const session = sessions.find((s) => s.id === chatId);
-    if (session) {
-      session.lastMessage = content.slice(0, 30);
-    }
-    nextTickScroll();
-    saveToLocalStorage();
-  };
-
-  const appendChunk = (chunk) => {
-    if (!chunk) return;
-    aiBuffer += chunk;
-    upsertAiMessage(aiBuffer);
-  };
-
-  eventSource.onmessage = (event) => {
-    if (!handleDefaultMessage) return;
-    if (!event.data) return;
-    appendChunk(event.data);
-  };
-
-  const bindEvent = (name) => {
-    eventSource.addEventListener(name, (event) => {
-      const data = event?.data ?? '';
-      if (!data) return;
-
-      if (name === 'complete' && closeOnComplete) {
-        if (showEventName) {
-          appendChunk(`\n[${name}] ${data}`);
-        } else {
-          appendChunk(`\n${data}`);
-        }
-        closeStream();
-        return;
-      }
-
-      if (showEventName) {
-        appendChunk(`\n[${name}] ${data}`);
-      } else {
-        appendChunk(`\n${data}`);
-      }
-    });
-  };
-
-  eventNames.forEach(bindEvent);
-
-  eventSource.onerror = () => {
-    showNotice('实时回复连接已中断', 'warning');
-    closeStream();
-  };
+const markErrorState = (message, duration = 4500) => {
+  setVoiceState(VOICE_STATES.ERROR);
+  showNotice(message, 'error', duration);
 };
 
-const openEmotionStream = (message, chatId) => {
-  if (!voiceMode.value) {
-    startStream(getChatStreamUrl(message, chatId), chatId);
-    return;
+const saveToLocalStorage = () => {
+  try {
+    const data = {
+      sessions,
+      messagesMap: Array.from(messagesMap.entries()),
+      currentChatId: currentChatId.value,
+      sessionIndex,
+      voiceMode: voiceMode.value
+    };
+    localStorage.setItem('chatData', JSON.stringify(data));
+  } catch (e) {
+    console.error('保存数据到 localStorage 失败', e);
+  }
+};
+
+const createSession = () => {
+  const id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+  sessions.unshift({
+    id,
+    index: sessionIndex++,
+    lastMessage: ''
+  });
+  messagesMap.set(id, []);
+  currentChatId.value = id;
+  saveToLocalStorage();
+};
+
+const closeStream = () => {
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+};
+
+const stopAudioPlayback = () => {
+  audioQueue = [];
+  if (currentAudioSource) {
+    try {
+      currentAudioSource.stop(0);
+    } catch (e) {
+      console.warn('stop AudioBufferSourceNode failed', e);
+    }
+    currentAudioSource = null;
+  }
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio.currentTime = 0;
+    currentAudio = null;
+  }
+  if (window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+  }
+  isAudioPlaying = false;
+};
+
+const resetActiveVoiceFlow = () => {
+  closeStream();
+  stopAudioPlayback();
+  setVoiceState(VOICE_STATES.IDLE);
+};
+
+const createNewChat = () => {
+  resetActiveVoiceFlow();
+  createSession();
+};
+
+const switchChat = (id) => {
+  if (id === currentChatId.value) return;
+  resetActiveVoiceFlow();
+  currentChatId.value = id;
+  saveToLocalStorage();
+};
+
+const appendMessage = (chatId, role, content) => {
+  const list = messagesMap.get(chatId) || [];
+  const msg = {
+    role,
+    content,
+    time: formatTime()
+  };
+  list.push(msg);
+  messagesMap.set(chatId, list);
+
+  const session = sessions.find((s) => s.id === chatId);
+  if (session) {
+    session.lastMessage = content.slice(0, 30);
   }
 
-  const url = getChatStreamWithTtsUrl(message, chatId);
-  startStream(url, chatId, {
-    handleDefaultMessage: false
-  });
-
-  eventSource.addEventListener('text', (event) => {
-    if (!event.data) return;
-    try {
-      const payload = JSON.parse(event.data);
-      appendAiChunk(chatId, payload?.content || '');
-    } catch (e) {
-      appendAiChunk(chatId, event.data);
-    }
-  });
-
-  eventSource.addEventListener('audio', async (event) => {
-    if (!event.data) return;
-    try {
-      const payload = JSON.parse(event.data);
-      const base64 = payload?.audioBase64;
-      const mimeType = payload?.mimeType || 'audio/mpeg';
-      if (!base64) return;
-      enqueueAudio(base64, mimeType, payload?.content || '');
-    } catch (e) {
-      console.error('解析 audio 事件失败', e);
-    }
-  });
-
-  eventSource.addEventListener('done', () => {
-    closeStream();
-  });
-
-  eventSource.addEventListener('tts_error', (event) => {
-    if (!event?.data) return;
-    showNotice('语音合成失败，已停止本段播报', 'warning');
-    console.warn('TTS 事件错误:', event.data);
-  });
-};
-
-const openManusStream = (message, chatId) => {
-  startStream(getManusChatStreamUrl(message), chatId, {
-    eventNames: [
-      'start',
-      'step_start',
-      'thinking_start',
-      'thinking',
-      'acting_start',
-      'acting_complete',
-      'step_complete',
-      'complete'
-    ],
-    closeOnComplete: true,
-    showEventName: true
-  });
+  nextTickScroll();
+  saveToLocalStorage();
 };
 
 const appendAiChunk = (chatId, chunk) => {
@@ -390,8 +385,163 @@ const appendAiChunk = (chatId, chunk) => {
     const current = list[list.length - 1]?.content || '';
     session.lastMessage = current.slice(0, 30);
   }
+
   nextTickScroll();
   saveToLocalStorage();
+};
+
+const startStream = (url, chatId, options = {}) => {
+  const {
+    eventNames = [],
+    closeOnComplete = false,
+    showEventName = false,
+    handleDefaultMessage = true,
+    onComplete = null
+  } = options;
+
+  eventSource = new EventSource(url);
+  let aiBuffer = '';
+
+  const upsertAiMessage = (content) => {
+    const list = messagesMap.get(chatId) || [];
+    const last = list[list.length - 1];
+
+    if (!last || last.role !== 'ai' || isThinking.value) {
+      const msg = {
+        role: 'ai',
+        content,
+        time: formatTime()
+      };
+      if (!last || last.role !== 'ai') {
+        list.push(msg);
+      } else {
+        last.content = content;
+        last.time = formatTime();
+      }
+      messagesMap.set(chatId, list);
+    } else {
+      last.content = content;
+    }
+
+    const session = sessions.find((s) => s.id === chatId);
+    if (session) {
+      session.lastMessage = content.slice(0, 30);
+    }
+
+    nextTickScroll();
+    saveToLocalStorage();
+  };
+
+  const appendChunk = (chunk) => {
+    if (!chunk) return;
+    aiBuffer += chunk;
+    upsertAiMessage(aiBuffer);
+  };
+
+  eventSource.onmessage = (event) => {
+    if (!handleDefaultMessage || !event.data) return;
+    appendChunk(event.data);
+  };
+
+  const bindEvent = (name) => {
+    eventSource.addEventListener(name, (event) => {
+      const data = event?.data ?? '';
+      if (!data) return;
+
+      if (name === 'complete' && closeOnComplete) {
+        appendChunk(showEventName ? `\n[${name}] ${data}` : `\n${data}`);
+        closeStream();
+        if (typeof onComplete === 'function') {
+          onComplete();
+        } else {
+          resetVoiceStateIfQuiet();
+        }
+        return;
+      }
+
+      appendChunk(showEventName ? `\n[${name}] ${data}` : `\n${data}`);
+    });
+  };
+
+  eventNames.forEach(bindEvent);
+
+  eventSource.onerror = () => {
+    showNotice('实时回复连接已中断', 'warning');
+    closeStream();
+    resetVoiceStateIfQuiet();
+  };
+};
+
+const openEmotionStream = (message, chatId) => {
+  setVoiceState(VOICE_STATES.THINKING);
+
+  if (!voiceMode.value) {
+    startStream(getChatStreamUrl(message, chatId), chatId, {
+      onComplete: () => setVoiceState(VOICE_STATES.IDLE)
+    });
+    return;
+  }
+
+  const url = getChatStreamWithTtsUrl(message, chatId);
+  startStream(url, chatId, {
+    handleDefaultMessage: false,
+    onComplete: () => resetVoiceStateIfQuiet()
+  });
+
+  eventSource.addEventListener('text', (event) => {
+    if (!event.data) return;
+    try {
+      const payload = JSON.parse(event.data);
+      appendAiChunk(chatId, payload?.content || '');
+    } catch (e) {
+      appendAiChunk(chatId, event.data);
+    }
+  });
+
+  eventSource.addEventListener('audio', (event) => {
+    if (!event.data) return;
+    try {
+      const payload = JSON.parse(event.data);
+      const base64 = payload?.audioBase64;
+      const mimeType = payload?.mimeType || 'audio/mpeg';
+      if (!base64) return;
+      setVoiceState(VOICE_STATES.SPEAKING);
+      enqueueAudio(base64, mimeType, payload?.content || '');
+    } catch (e) {
+      console.error('解析 audio 事件失败', e);
+    }
+  });
+
+  eventSource.addEventListener('done', () => {
+    closeStream();
+    resetVoiceStateIfQuiet();
+  });
+
+  eventSource.addEventListener('tts_error', (event) => {
+    if (!event?.data) return;
+    showNotice('语音合成失败，已停止本段播报', 'warning');
+    console.warn('TTS 事件错误:', event.data);
+    resetVoiceStateIfQuiet();
+  });
+};
+
+const openManusStream = (message, chatId) => {
+  setVoiceState(VOICE_STATES.THINKING);
+  startStream(getManusChatStreamUrl(message), chatId, {
+    eventNames: [
+      'start',
+      'step_start',
+      'thinking_start',
+      'thinking',
+      'acting_start',
+      'acting_complete',
+      'step_complete',
+      'complete'
+    ],
+    closeOnComplete: true,
+    showEventName: true,
+    onComplete: () => setVoiceState(VOICE_STATES.IDLE)
+  });
 };
 
 const base64ToBlob = (base64, mimeType) => {
@@ -404,10 +554,14 @@ const base64ToBlob = (base64, mimeType) => {
   return new Blob([bytes], { type: mimeType });
 };
 
-const enqueueAudio = (audioBase64, mimeType, text = '') => {
-  if (!voiceMode.value) return;
-  audioQueue.push({ audioBase64, mimeType, text });
-  playNextAudio();
+const base64ToArrayBuffer = (base64) => {
+  const binary = atob(base64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
 };
 
 const ensureAudioContext = async () => {
@@ -426,16 +580,6 @@ const ensureAudioContext = async () => {
   }
 
   return audioContext;
-};
-
-const base64ToArrayBuffer = (base64) => {
-  const binary = atob(base64);
-  const len = binary.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes.buffer;
 };
 
 const playWithWebAudio = async (audioBase64) => {
@@ -487,11 +631,7 @@ const pickChineseVoice = () => {
   const synth = window.speechSynthesis;
   if (!synth) return null;
   const voices = synth.getVoices() || [];
-  return (
-    voices.find((v) => v.lang === 'zh-CN') ||
-    voices.find((v) => v.lang?.startsWith('zh')) ||
-    null
-  );
+  return voices.find((v) => v.lang === 'zh-CN') || voices.find((v) => v.lang?.startsWith('zh')) || null;
 };
 
 const speakWithBrowserTts = async (text) => {
@@ -506,19 +646,29 @@ const speakWithBrowserTts = async (text) => {
     if (voice) utterance.voice = voice;
     utterance.lang = voice?.lang || 'zh-CN';
     utterance.rate = BROWSER_TTS_RATE;
-    utterance.pitch = 1.0;
-
+    utterance.pitch = 1;
     utterance.onend = () => resolve();
     utterance.onerror = (e) => reject(e);
     synth.speak(utterance);
   });
 };
 
+const enqueueAudio = (audioBase64, mimeType, text = '') => {
+  if (!voiceMode.value) return;
+  audioQueue.push({ audioBase64, mimeType, text });
+  playNextAudio();
+};
+
 const playNextAudio = async () => {
   if (isAudioPlaying || audioQueue.length === 0) {
+    if (audioQueue.length === 0 && isSpeaking.value) {
+      setVoiceState(VOICE_STATES.IDLE);
+    }
     return;
   }
+
   isAudioPlaying = true;
+  setVoiceState(VOICE_STATES.SPEAKING);
   const { audioBase64, mimeType, text } = audioQueue.shift();
 
   try {
@@ -538,41 +688,19 @@ const playNextAudio = async () => {
   }
 
   isAudioPlaying = false;
+  if (audioQueue.length === 0) {
+    setVoiceState(VOICE_STATES.IDLE);
+  }
   playNextAudio();
-};
-
-const closeStream = () => {
-  if (eventSource) {
-    eventSource.close();
-    eventSource = null;
-  }
-};
-
-const stopAudioPlayback = () => {
-  audioQueue = [];
-  if (currentAudioSource) {
-    try {
-      currentAudioSource.stop(0);
-    } catch (e) {
-      console.warn('stop AudioBufferSourceNode failed', e);
-    }
-    currentAudioSource = null;
-  }
-  if (currentAudio) {
-    currentAudio.pause();
-    currentAudio.currentTime = 0;
-    currentAudio = null;
-  }
-  if (window.speechSynthesis) {
-    window.speechSynthesis.cancel();
-  }
-  isAudioPlaying = false;
 };
 
 const toggleVoiceMode = () => {
   voiceMode.value = !voiceMode.value;
   if (!voiceMode.value) {
     stopAudioPlayback();
+    if (isSpeaking.value) {
+      setVoiceState(VOICE_STATES.IDLE);
+    }
   }
   saveToLocalStorage();
 };
@@ -584,7 +712,6 @@ const resolveRecordingMimeType = () => {
     'audio/mp4',
     'audio/ogg;codecs=opus'
   ];
-
   return candidates.find((type) => window.MediaRecorder?.isTypeSupported?.(type)) || '';
 };
 
@@ -595,12 +722,18 @@ const stopMediaStream = () => {
   }
 };
 
+const stopRecording = () => {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+  }
+};
+
 const startRecording = async () => {
-  if (recording.value || recognizing.value || sending.value) {
+  if (isListening.value || isRecognizing.value || isThinking.value) {
     return;
   }
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-    showNotice('当前浏览器不支持录音', 'error', 4500);
+    markErrorState('当前浏览器不支持录音');
     return;
   }
 
@@ -612,6 +745,7 @@ const startRecording = async () => {
         autoGainControl: true
       }
     });
+
     const mimeType = resolveRecordingMimeType();
     mediaRecorder = mimeType ? new MediaRecorder(mediaStream, { mimeType }) : new MediaRecorder(mediaStream);
     recordingChunks = [];
@@ -623,10 +757,11 @@ const startRecording = async () => {
     };
 
     mediaRecorder.onstop = async () => {
-      recording.value = false;
+      setVoiceState(VOICE_STATES.RECOGNIZING);
       stopMediaStream();
 
       if (recordingChunks.length === 0) {
+        setVoiceState(VOICE_STATES.IDLE);
         return;
       }
 
@@ -635,7 +770,6 @@ const startRecording = async () => {
       const audioBlob = new Blob(recordingChunks, { type: finalMimeType });
       const audioFile = new File([audioBlob], `speech-input.${extension}`, { type: finalMimeType });
       recordingChunks = [];
-      recognizing.value = true;
 
       try {
         const response = await recognizeSpeech(audioFile);
@@ -645,33 +779,29 @@ const startRecording = async () => {
           await autoSendRecognizedText(recognizedText);
         } else {
           showNotice('未识别到清晰语音，请重试', 'warning');
+          setVoiceState(VOICE_STATES.IDLE);
         }
       } catch (e) {
-        showNotice('语音识别失败，请稍后重试', 'error', 4500);
+        markErrorState('语音识别失败，请稍后重试');
         console.error('语音识别失败', e);
       } finally {
-        recognizing.value = false;
+        mediaRecorder = null;
       }
     };
 
     mediaRecorder.start();
-    recording.value = true;
+    setVoiceState(VOICE_STATES.LISTENING);
   } catch (e) {
-    showNotice('麦克风权限获取失败，请检查浏览器设置', 'error', 4500);
+    markErrorState('麦克风权限获取失败，请检查浏览器设置');
     console.error('启动录音失败', e);
     stopMediaStream();
-  }
-};
-
-const stopRecording = () => {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop();
   }
 };
 
 const startPressRecording = async () => {
   closeStream();
   stopAudioPlayback();
+  setVoiceState(VOICE_STATES.IDLE);
   recordingTriggeredByPress = true;
   await startRecording();
 };
@@ -681,7 +811,7 @@ const stopPressRecording = () => {
     return;
   }
   recordingTriggeredByPress = false;
-  if (recording.value) {
+  if (isListening.value) {
     stopRecording();
   }
 };
@@ -690,10 +820,10 @@ const autoSendRecognizedText = async (text) => {
   const normalized = text?.trim();
   if (!normalized || !currentChatId.value) {
     showNotice('当前没有可用会话，无法发送语音识别结果', 'warning');
+    setVoiceState(VOICE_STATES.IDLE);
     return;
   }
 
-  sending.value = true;
   appendMessage(currentChatId.value, 'user', normalized);
   input.value = '';
 
@@ -704,10 +834,6 @@ const autoSendRecognizedText = async (text) => {
   } else {
     openEmotionStream(normalized, currentChatId.value);
   }
-
-  setTimeout(() => {
-    sending.value = false;
-  }, 300);
 };
 
 const handleSend = () => {
@@ -718,7 +844,7 @@ const handleSend = () => {
     }
     return;
   }
-  sending.value = true;
+
   if (voiceMode.value) {
     ensureAudioContext();
   }
@@ -733,13 +859,7 @@ const handleSend = () => {
   } else {
     openEmotionStream(text, currentChatId.value);
   }
-
-  setTimeout(() => {
-    sending.value = false;
-  }, 300);
 };
-
-const currentMessages = ref([]);
 
 watch(
   currentChatId,
@@ -773,21 +893,6 @@ const mapConversationToSession = (conversation, index) => {
     id: conversationId,
     lastUpdateTime
   };
-};
-
-const saveToLocalStorage = () => {
-  try {
-    const data = {
-      sessions,
-      messagesMap: Array.from(messagesMap.entries()),
-      currentChatId: currentChatId.value,
-      sessionIndex,
-      voiceMode: voiceMode.value
-    };
-    localStorage.setItem('chatData', JSON.stringify(data));
-  } catch (e) {
-    console.error('保存数据到 localStorage 失败', e);
-  }
 };
 
 const loadFromLocalStorage = () => {
@@ -841,6 +946,7 @@ const loadInitialConversations = async () => {
         latest = cur;
       }
     }
+
     currentChatId.value = latest.id;
     saveToLocalStorage();
   } catch (e) {
@@ -867,5 +973,6 @@ onBeforeUnmount(() => {
   }
   stopRecording();
   stopMediaStream();
+  setVoiceState(VOICE_STATES.IDLE);
 });
 </script>

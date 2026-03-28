@@ -2,7 +2,7 @@ import http from './http';
 
 // 同步对话（普通请求，不是流式）
 export function chatSync(message, chatId) {
-  return http.get(`/ai/emotion_app/chat/sync`, {
+  return http.get('/ai/emotion_app/chat/sync', {
     params: { message, chatId }
   });
 }
@@ -14,12 +14,11 @@ export function getChatStreamUrl(message, chatId) {
     chatId
   });
 
-  // http.defaults.baseURL 形如 "http://localhost:8123/api"
   const base = http.defaults.baseURL || '';
   return `${base}/ai/emotion_app/chat/stream?${params.toString()}`;
 }
 
-// 获取情绪聊天 SSE 流地址（文本 + TTS音频事件）
+// 获取情绪聊天 SSE 流地址（文本 + TTS 音频事件）
 export function getChatStreamWithTtsUrl(message, chatId) {
   const params = new URLSearchParams({
     message,
@@ -42,17 +41,17 @@ export function recognizeSpeech(file) {
 
 // 带报告的对话（个人成长规划）
 export function chatWithReport(message, chatId) {
-  return http.get(`/ai/emotion_app/chat/report`, {
+  return http.get('/ai/emotion_app/chat/report', {
     params: { message, chatId }
   });
 }
 
-// 获取所有会话概要列表（基于Redis）
+// 获取所有会话摘要列表（基于 Redis）
 export function getAllConversations() {
-  return http.get(`/ai/redis/conversations`);
+  return http.get('/ai/redis/conversations');
 }
 
-// 根据 conversationId 获取单个会话详情（基于Redis）
+// 根据 conversationId 获取单个会话详情（基于 Redis）
 export function getConversationById(conversationId) {
   return http.get(`/ai/redis/conversations/${encodeURIComponent(conversationId)}`);
 }
@@ -63,4 +62,3 @@ export function getManusChatStreamUrl(message) {
   const base = http.defaults.baseURL || '';
   return `${base}/ai/manus/chat?${params.toString()}`;
 }
-

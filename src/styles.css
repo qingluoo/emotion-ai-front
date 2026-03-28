@@ -270,6 +270,59 @@ body {
   color: #6b7280;
 }
 
+.voice-state-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.state-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.state-idle {
+  background: #eef2f7;
+  color: #475569;
+}
+
+.state-listening {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.state-recognizing {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.state-thinking {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.state-speaking {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.state-error {
+  background: #fecaca;
+  color: #991b1b;
+}
+
+.state-text {
+  font-size: 12px;
+  color: #64748b;
+}
+
 .chat-status {
   margin-bottom: 10px;
   padding: 10px 12px;
