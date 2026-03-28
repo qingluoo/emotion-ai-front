@@ -28,6 +28,14 @@
         <div class="chat-header-right">
           <button
             class="btn btn-ghost btn-small"
+            :style="voiceMode ? voiceOnStyle : null"
+            @click="toggleVoiceMode"
+            title="控制是否开启语音播放"
+          >
+            Voice {{ voiceMode ? 'ON' : 'OFF' }}
+          </button>
+          <button
+            class="btn btn-ghost btn-small"
             :style="thinkMode ? thinkOnStyle : null"
             @click="thinkMode = !thinkMode"
             title="开启后将调用 Manus 智能体接口"
@@ -89,8 +97,13 @@ const currentChatId = ref('');
 const input = ref('');
 const sending = ref(false);
 const thinkMode = ref(false);
+const voiceMode = ref(true);
 const thinkOnStyle = {
   background: '#4f46e5',
+  color: '#fff'
+};
+const voiceOnStyle = {
+  background: '#0f766e',
   color: '#fff'
 };
 const chatWindowRef = ref(null);
@@ -98,6 +111,10 @@ let eventSource = null;
 let sessionIndex = 1;
 let audioQueue = [];
 let isAudioPlaying = false;
+let currentAudio = null;
+let audioContext = null;
+let currentAudioSource = null;
+const BROWSER_TTS_RATE = 1.25;
 
 const formatTime = () => {
   const d = new Date();
@@ -245,6 +262,11 @@ const startStream = (url, chatId, options = {}) => {
 };
 
 const openEmotionStream = (message, chatId) => {
+  if (!voiceMode.value) {
+    startStream(getChatStreamUrl(message, chatId), chatId);
+    return;
+  }
+
   const url = getChatStreamWithTtsUrl(message, chatId);
   startStream(url, chatId, {
     handleDefaultMessage: false
@@ -267,7 +289,7 @@ const openEmotionStream = (message, chatId) => {
       const base64 = payload?.audioBase64;
       const mimeType = payload?.mimeType || 'audio/mpeg';
       if (!base64) return;
-      enqueueAudio(base64, mimeType);
+      enqueueAudio(base64, mimeType, payload?.content || '');
     } catch (e) {
       console.error('解析 audio 事件失败', e);
     }
@@ -277,8 +299,9 @@ const openEmotionStream = (message, chatId) => {
     closeStream();
   });
 
-  eventSource.addEventListener('error', () => {
-    closeStream();
+  eventSource.addEventListener('tts_error', (event) => {
+    if (!event?.data) return;
+    console.warn('TTS 事件错误:', event.data);
   });
 };
 
@@ -336,9 +359,114 @@ const base64ToBlob = (base64, mimeType) => {
   return new Blob([bytes], { type: mimeType });
 };
 
-const enqueueAudio = (audioBase64, mimeType) => {
-  audioQueue.push({ audioBase64, mimeType });
+const enqueueAudio = (audioBase64, mimeType, text = '') => {
+  if (!voiceMode.value) return;
+  audioQueue.push({ audioBase64, mimeType, text });
   playNextAudio();
+};
+
+const ensureAudioContext = async () => {
+  if (!audioContext) {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return null;
+    audioContext = new AudioCtx();
+  }
+
+  if (audioContext.state === 'suspended') {
+    try {
+      await audioContext.resume();
+    } catch (e) {
+      console.warn('AudioContext resume failed', e);
+    }
+  }
+
+  return audioContext;
+};
+
+const base64ToArrayBuffer = (base64) => {
+  const binary = atob(base64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
+};
+
+const playWithWebAudio = async (audioBase64) => {
+  const ctx = await ensureAudioContext();
+  if (!ctx || ctx.state !== 'running') {
+    throw new Error('AudioContext is not running');
+  }
+
+  const arrayBuffer = base64ToArrayBuffer(audioBase64);
+  const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+
+  await new Promise((resolve) => {
+    const source = ctx.createBufferSource();
+    currentAudioSource = source;
+    source.buffer = audioBuffer;
+    source.connect(ctx.destination);
+    source.onended = () => {
+      currentAudioSource = null;
+      resolve();
+    };
+    source.start(0);
+  });
+};
+
+const playWithHtmlAudio = async (audioBase64, mimeType) => {
+  const blob = base64ToBlob(audioBase64, mimeType);
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  currentAudio = audio;
+
+  await new Promise((resolve, reject) => {
+    audio.onended = () => {
+      URL.revokeObjectURL(url);
+      currentAudio = null;
+      resolve();
+    };
+
+    audio.onerror = (e) => {
+      URL.revokeObjectURL(url);
+      currentAudio = null;
+      reject(e);
+    };
+
+    audio.play().catch(reject);
+  });
+};
+
+const pickChineseVoice = () => {
+  const synth = window.speechSynthesis;
+  if (!synth) return null;
+  const voices = synth.getVoices() || [];
+  return (
+    voices.find((v) => v.lang === 'zh-CN') ||
+    voices.find((v) => v.lang?.startsWith('zh')) ||
+    null
+  );
+};
+
+const speakWithBrowserTts = async (text) => {
+  const synth = window.speechSynthesis;
+  if (!synth || !text?.trim()) {
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    const utterance = new SpeechSynthesisUtterance(text);
+    const voice = pickChineseVoice();
+    if (voice) utterance.voice = voice;
+    utterance.lang = voice?.lang || 'zh-CN';
+    utterance.rate = BROWSER_TTS_RATE;
+    utterance.pitch = 1.0;
+
+    utterance.onend = () => resolve();
+    utterance.onerror = (e) => reject(e);
+    synth.speak(utterance);
+  });
 };
 
 const playNextAudio = async () => {
@@ -346,31 +474,26 @@ const playNextAudio = async () => {
     return;
   }
   isAudioPlaying = true;
-  const { audioBase64, mimeType } = audioQueue.shift();
+  const { audioBase64, mimeType, text } = audioQueue.shift();
 
   try {
-    const blob = base64ToBlob(audioBase64, mimeType);
-    const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
-
-    audio.onended = () => {
-      URL.revokeObjectURL(url);
-      isAudioPlaying = false;
-      playNextAudio();
-    };
-
-    audio.onerror = () => {
-      URL.revokeObjectURL(url);
-      isAudioPlaying = false;
-      playNextAudio();
-    };
-
-    await audio.play();
+    try {
+      await playWithWebAudio(audioBase64);
+    } catch (webAudioErr) {
+      console.warn('WebAudio play failed, fallback to HTMLAudio', webAudioErr);
+      try {
+        await playWithHtmlAudio(audioBase64, mimeType);
+      } catch (htmlAudioErr) {
+        console.warn('HTMLAudio play failed, fallback to browser TTS', htmlAudioErr);
+        await speakWithBrowserTts(text);
+      }
+    }
   } catch (e) {
-    console.error('音频播放失败', e);
-    isAudioPlaying = false;
-    playNextAudio();
+    console.error('Audio playback failed', e);
   }
+
+  isAudioPlaying = false;
+  playNextAudio();
 };
 
 const closeStream = () => {
@@ -380,15 +503,48 @@ const closeStream = () => {
   }
 };
 
+const stopAudioPlayback = () => {
+  audioQueue = [];
+  if (currentAudioSource) {
+    try {
+      currentAudioSource.stop(0);
+    } catch (e) {
+      console.warn('stop AudioBufferSourceNode failed', e);
+    }
+    currentAudioSource = null;
+  }
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio.currentTime = 0;
+    currentAudio = null;
+  }
+  if (window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+  }
+  isAudioPlaying = false;
+};
+
+const toggleVoiceMode = () => {
+  voiceMode.value = !voiceMode.value;
+  if (!voiceMode.value) {
+    stopAudioPlayback();
+  }
+  saveToLocalStorage();
+};
+
 const handleSend = () => {
   const text = input.value.trim();
   if (!text || !currentChatId.value) return;
   sending.value = true;
+  if (voiceMode.value) {
+    ensureAudioContext();
+  }
 
   appendMessage(currentChatId.value, 'user', text);
   input.value = '';
 
   closeStream();
+  stopAudioPlayback();
   if (thinkMode.value) {
     openManusStream(text, currentChatId.value);
   } else {
@@ -442,7 +598,8 @@ const saveToLocalStorage = () => {
       sessions: sessions,
       messagesMap: Array.from(messagesMap.entries()),
       currentChatId: currentChatId.value,
-      sessionIndex: sessionIndex
+      sessionIndex: sessionIndex,
+      voiceMode: voiceMode.value
     };
     localStorage.setItem('chatData', JSON.stringify(data));
   } catch (e) {
@@ -463,6 +620,9 @@ const loadFromLocalStorage = () => {
       });
       currentChatId.value = data.currentChatId;
       sessionIndex = data.sessionIndex;
+      if (typeof data.voiceMode === 'boolean') {
+        voiceMode.value = data.voiceMode;
+      }
       return true;
     }
   } catch (e) {
@@ -519,8 +679,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   closeStream();
-  audioQueue = [];
-  isAudioPlaying = false;
+  stopAudioPlayback();
 });
 </script>
 
