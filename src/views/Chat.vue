@@ -75,6 +75,13 @@
         <div class="chat-input-actions">
           <span class="tip">按 Enter 发送，Shift + Enter 换行</span>
           <button
+            class="btn btn-ghost"
+            :disabled="sending || recognizing"
+            @click="toggleRecording"
+          >
+            {{ recording ? '结束录音' : (recognizing ? '识别中...' : '语音输入') }}
+          </button>
+          <button
             class="btn btn-primary"
             :disabled="sending || !input.trim()"
             @click="handleSend"
@@ -89,13 +96,15 @@
 
 <script setup>
 import { onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
-import { getChatStreamUrl, getChatStreamWithTtsUrl, getAllConversations, getManusChatStreamUrl } from '../api/emotionApp';
+import { getChatStreamUrl, getChatStreamWithTtsUrl, getAllConversations, getManusChatStreamUrl, recognizeSpeech } from '../api/emotionApp';
 
 const sessions = reactive([]);
 const messagesMap = reactive(new Map());
 const currentChatId = ref('');
 const input = ref('');
 const sending = ref(false);
+const recording = ref(false);
+const recognizing = ref(false);
 const thinkMode = ref(false);
 const voiceMode = ref(true);
 const thinkOnStyle = {
@@ -114,6 +123,9 @@ let isAudioPlaying = false;
 let currentAudio = null;
 let audioContext = null;
 let currentAudioSource = null;
+let mediaRecorder = null;
+let mediaStream = null;
+let recordingChunks = [];
 const BROWSER_TTS_RATE = 1.25;
 
 const formatTime = () => {
@@ -532,6 +544,90 @@ const toggleVoiceMode = () => {
   saveToLocalStorage();
 };
 
+const resolveRecordingMimeType = () => {
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4',
+    'audio/ogg;codecs=opus'
+  ];
+
+  return candidates.find((type) => window.MediaRecorder?.isTypeSupported?.(type)) || '';
+};
+
+const stopMediaStream = () => {
+  if (mediaStream) {
+    mediaStream.getTracks().forEach((track) => track.stop());
+    mediaStream = null;
+  }
+};
+
+const startRecording = async () => {
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    alert('当前浏览器不支持录音');
+    return;
+  }
+
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mimeType = resolveRecordingMimeType();
+    mediaRecorder = mimeType ? new MediaRecorder(mediaStream, { mimeType }) : new MediaRecorder(mediaStream);
+    recordingChunks = [];
+
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        recordingChunks.push(event.data);
+      }
+    };
+
+    mediaRecorder.onstop = async () => {
+      recording.value = false;
+      stopMediaStream();
+
+      if (recordingChunks.length === 0) {
+        return;
+      }
+
+      const finalMimeType = mediaRecorder?.mimeType || mimeType || 'audio/webm';
+      const extension = finalMimeType.includes('mp4') ? 'm4a' : finalMimeType.includes('ogg') ? 'ogg' : 'webm';
+      const audioBlob = new Blob(recordingChunks, { type: finalMimeType });
+      const audioFile = new File([audioBlob], `speech-input.${extension}`, { type: finalMimeType });
+      recordingChunks = [];
+      recognizing.value = true;
+
+      try {
+        const response = await recognizeSpeech(audioFile);
+        const recognizedText = response?.data?.text || '';
+        input.value = recognizedText ? `${input.value}${input.value ? ' ' : ''}${recognizedText}` : input.value;
+      } catch (e) {
+        console.error('语音识别失败', e);
+      } finally {
+        recognizing.value = false;
+      }
+    };
+
+    mediaRecorder.start();
+    recording.value = true;
+  } catch (e) {
+    console.error('启动录音失败', e);
+    stopMediaStream();
+  }
+};
+
+const stopRecording = () => {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+  }
+};
+
+const toggleRecording = async () => {
+  if (recording.value) {
+    stopRecording();
+    return;
+  }
+  await startRecording();
+};
+
 const handleSend = () => {
   const text = input.value.trim();
   if (!text || !currentChatId.value) return;
@@ -680,6 +776,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   closeStream();
   stopAudioPlayback();
+  stopRecording();
+  stopMediaStream();
 });
 </script>
 

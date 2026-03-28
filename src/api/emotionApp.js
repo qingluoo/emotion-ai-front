@@ -30,6 +30,16 @@ export function getChatStreamWithTtsUrl(message, chatId) {
   return `${base}/ai/emotion_app/chat/stream/tts?${params.toString()}`;
 }
 
+export function recognizeSpeech(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  return http.post('/ai/asr/recognize', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    }
+  });
+}
+
 // 带报告的对话（个人成长规划）
 export function chatWithReport(message, chatId) {
   return http.get(`/ai/emotion_app/chat/report`, {
