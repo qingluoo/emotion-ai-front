@@ -46,6 +46,30 @@ export function chatWithReport(message, chatId) {
   });
 }
 
+export function createEmotionDiary(data) {
+  return http.post('/ai/emotion-growth/diaries', data);
+}
+
+export function getEmotionDiary(diaryId) {
+  return http.get(`/ai/emotion-growth/diaries/${encodeURIComponent(diaryId)}`);
+}
+
+export function listEmotionDiaries(params) {
+  return http.get('/ai/emotion-growth/diaries', { params });
+}
+
+export function updateEmotionDiary(diaryId, data) {
+  return http.put(`/ai/emotion-growth/diaries/${encodeURIComponent(diaryId)}`, data);
+}
+
+export function deleteEmotionDiary(diaryId) {
+  return http.delete(`/ai/emotion-growth/diaries/${encodeURIComponent(diaryId)}`);
+}
+
+export function recognizeEmotion(data) {
+  return http.post('/ai/emotion-growth/recognize', data);
+}
+
 export function getAllConversations() {
   return http.get('/ai/redis/conversations');
 }
