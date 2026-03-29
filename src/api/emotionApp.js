@@ -70,6 +70,26 @@ export function recognizeEmotion(data) {
   return http.post('/ai/emotion-growth/recognize', data);
 }
 
+export function getEmotionTrends(params) {
+  return http.get('/ai/emotion-growth/trends', { params });
+}
+
+export function generateGrowthPlan(data) {
+  return http.post('/ai/emotion-growth/plans/generate', data);
+}
+
+export function getLatestGrowthPlan() {
+  return http.get('/ai/emotion-growth/plans/latest');
+}
+
+export function rebuildGrowthProfile(data) {
+  return http.post('/ai/emotion-growth/profile/rebuild', data);
+}
+
+export function getLatestGrowthProfile() {
+  return http.get('/ai/emotion-growth/profile');
+}
+
 export function getAllConversations() {
   return http.get('/ai/redis/conversations');
 }
