@@ -10,6 +10,7 @@ http.interceptors.request.use((config) => {
   const tokenValue = getTokenValue();
   if (tokenValue) {
     config.headers[getTokenName()] = tokenValue;
+    config.headers.Authorization = `Bearer ${tokenValue}`;
   }
   return config;
 });
@@ -26,4 +27,3 @@ http.interceptors.response.use(
 );
 
 export default http;
-

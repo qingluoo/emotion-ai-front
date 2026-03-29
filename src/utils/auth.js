@@ -36,6 +36,15 @@ export function getTokenValue() {
   return localStorage.getItem(TOKEN_VALUE_KEY) || '';
 }
 
+export function appendTokenParams(params) {
+  const tokenValue = getTokenValue();
+  if (!tokenValue) {
+    return params;
+  }
+  params.set(getTokenName(), tokenValue);
+  return params;
+}
+
 export function getStoredUser() {
   return authState.user;
 }

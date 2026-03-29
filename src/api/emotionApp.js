@@ -1,35 +1,32 @@
-﻿import http from './http';
+import http from './http';
+import { appendTokenParams } from '../utils/auth';
 
-// 同步对话
 export function chatSync(message, chatId) {
   return http.get('/ai/emotion_app/chat/sync', {
     params: { message, chatId }
   });
 }
 
-// 获取文本流式聊天 SSE 地址
 export function getChatStreamUrl(message, chatId) {
-  const params = new URLSearchParams({
+  const params = appendTokenParams(new URLSearchParams({
     message,
     chatId
-  });
+  }));
 
   const base = http.defaults.baseURL || '';
   return `${base}/ai/emotion_app/chat/stream?${params.toString()}`;
 }
 
-// 获取文本加 TTS 的 SSE 地址
 export function getChatStreamWithTtsUrl(message, chatId) {
-  const params = new URLSearchParams({
+  const params = appendTokenParams(new URLSearchParams({
     message,
     chatId
-  });
+  }));
 
   const base = http.defaults.baseURL || '';
   return `${base}/ai/emotion_app/chat/stream/tts?${params.toString()}`;
 }
 
-// 上传音频做 ASR
 export function recognizeSpeech(file) {
   const formData = new FormData();
   formData.append('file', file);
@@ -99,7 +96,7 @@ export function getConversationById(conversationId) {
 }
 
 export function getManusChatStreamUrl(message) {
-  const params = new URLSearchParams({ message });
+  const params = appendTokenParams(new URLSearchParams({ message }));
   const base = http.defaults.baseURL || '';
   return `${base}/ai/manus/chat?${params.toString()}`;
 }
@@ -108,7 +105,7 @@ export function getRealtimeAsrWsUrl(chatId) {
   const base = http.defaults.baseURL || '';
   const httpUrl = new URL(base);
   const wsProtocol = httpUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-  const params = new URLSearchParams();
+  const params = appendTokenParams(new URLSearchParams());
   if (chatId) {
     params.set('chatId', chatId);
   }
