@@ -144,6 +144,7 @@ import {
   getRealtimeAsrWsUrl,
   recognizeSpeech
 } from '../api/emotionApp';
+import { authState } from '../utils/auth';
 
 const VOICE_STATES = {
   IDLE: 'idle',
@@ -348,6 +349,11 @@ const markErrorState = (message, duration = 4500) => {
   showNotice(message, 'error', duration);
 };
 
+const getChatStorageKey = () => {
+  const userId = authState.user?.userId;
+  return userId ? `chatData:${userId}` : 'chatData:guest';
+};
+
 const saveToLocalStorage = () => {
   try {
     const data = {
@@ -358,7 +364,7 @@ const saveToLocalStorage = () => {
       voiceMode: voiceMode.value,
       callMode: callMode.value
     };
-    localStorage.setItem('chatData', JSON.stringify(data));
+    localStorage.setItem(getChatStorageKey(), JSON.stringify(data));
   } catch (e) {
     console.error('保存数据到 localStorage 失败', e);
   }
@@ -1235,7 +1241,7 @@ const mapConversationToSession = (conversation, index) => {
 
 const loadFromLocalStorage = () => {
   try {
-    const savedData = localStorage.getItem('chatData');
+    const savedData = localStorage.getItem(getChatStorageKey());
     if (savedData) {
       const data = JSON.parse(savedData);
       sessions.length = 0;
@@ -1262,6 +1268,10 @@ const loadFromLocalStorage = () => {
 
 const loadInitialConversations = async () => {
   try {
+    // 清除当前用户的本地缓存，确保从后端获取最新数据
+    localStorage.removeItem(getChatStorageKey());
+    localStorage.removeItem('chatData');
+    
     const res = await getAllConversations();
     const convs = Array.isArray(res.data) ? res.data : [];
 
@@ -1304,6 +1314,14 @@ onMounted(() => {
     loadInitialConversations();
   }
 });
+
+// 监听用户登录状态变化，当用户改变时刷新会话列表
+watch(() => authState.user, (newUser, oldUser) => {
+  if (newUser && newUser.userId !== oldUser?.userId) {
+    // 用户登录或切换，强制从后端获取最新会话列表
+    loadInitialConversations();
+  }
+}, { deep: true });
 
 onBeforeUnmount(() => {
   closeStream();

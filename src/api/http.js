@@ -2,7 +2,9 @@ import axios from 'axios';
 import { clearAuth, getTokenName, getTokenValue } from '../utils/auth';
 
 const http = axios.create({
-  baseURL: 'http://localhost:8123/api',
+  baseURL: process.env.NODE_ENV === 'production' 
+    ? `${window.location.protocol}//${window.location.host}/api`  // 使用完整 URL
+    : 'http://localhost:8123/api',
   timeout: 30000
 });
 
