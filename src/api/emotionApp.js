@@ -47,6 +47,10 @@ export function createEmotionDiary(data) {
   return http.post('/ai/emotion-growth/diaries', data);
 }
 
+export function generateDiaryFromConversation(data) {
+  return http.post('/ai/emotion-growth/diaries/generate-from-conversation', data);
+}
+
 export function getEmotionDiary(diaryId) {
   return http.get(`/ai/emotion-growth/diaries/${encodeURIComponent(diaryId)}`);
 }
@@ -95,10 +99,13 @@ export function getConversationById(conversationId) {
   return http.get(`/ai/redis/conversations/${encodeURIComponent(conversationId)}`);
 }
 
-export function getManusChatStreamUrl(message) {
-  const params = appendTokenParams(new URLSearchParams({ message }));
+export function getManusChatStreamUrl(message, chatId) {
+  const params = appendTokenParams(new URLSearchParams({
+    message,
+    chatId
+  }));
   const base = http.defaults.baseURL || '';
-  return `${base}/ai/manus/chat?${params.toString()}`;
+  return `${base}/ai/manus/chat/stream?${params.toString()}`;
 }
 
 export function getRealtimeAsrWsUrl(chatId) {

@@ -76,6 +76,44 @@
             </div>
             <button v-if="selectedDiaryId" class="btn btn-ghost btn-small" @click="resetForm">新建一条</button>
           </div>
+          <div class="generate-card">
+            <div class="card-head">
+              <div>
+                <h3>从聊天会话生成日记</h3>
+                <p class="hint">读取选中会话中的用户消息，自动生成当天情绪日记。</p>
+              </div>
+            </div>
+            <div class="grid two">
+              <label class="field">
+                <span>聊天会话</span>
+                <select v-model="generateForm.chatId" class="select-input">
+                  <option value="">请选择会话</option>
+                  <option v-for="item in conversationOptions" :key="item.value" :value="item.value">
+                    {{ item.label }}
+                  </option>
+                </select>
+              </label>
+              <label class="field">
+                <span>生成日期</span>
+                <input v-model="generateForm.recordDate" type="date" />
+              </label>
+            </div>
+            <label class="field">
+              <span>或手动输入 chatId</span>
+              <input v-model="generateForm.chatId" type="text" placeholder="没有列表时可直接输入当前聊天会话 ID" />
+            </label>
+            <div class="actions">
+              <button class="btn btn-primary" :disabled="generatingFromConversation || !generateForm.chatId" @click="submitGenerateFromConversation">
+                {{ generatingFromConversation ? '生成中...' : '根据会话生成当日日记' }}
+              </button>
+              <button class="btn btn-ghost" :disabled="generatingFromConversation" @click="loadConversations">
+                刷新会话
+              </button>
+            </div>
+            <div v-if="conversationOptions.length === 0" class="status info">
+              当前没有从后端读取到可选会话。你可以先在聊天页发送一条消息，或者直接手动填写 chatId。
+            </div>
+          </div>
           <div class="grid two">
             <label class="field">
               <span>记录日期</span>
@@ -290,8 +328,10 @@ import { computed, onMounted, reactive, ref, watch } from 'vue';
 import {
   createEmotionDiary,
   deleteEmotionDiary,
+  generateDiaryFromConversation,
   generateGrowthPlan,
   getEmotionTrends,
+  getAllConversations,
   getLatestGrowthPlan,
   getLatestGrowthProfile,
   listEmotionDiaries,
@@ -299,6 +339,7 @@ import {
   recognizeEmotion,
   updateEmotionDiary
 } from '../api/emotionApp';
+import { authState } from '../utils/auth';
 
 const tabs = [
   { key: 'diary', label: '日记录入' },
@@ -315,10 +356,12 @@ const currentMonth = ref(today.getMonth());
 const selectedDate = ref(formatDate(today));
 const selectedRangeDays = ref(30);
 const diaries = ref([]);
+const conversations = ref([]);
 const loadingDay = ref(false);
 const dayError = ref('');
 const selectedDiaryId = ref(null);
 const saving = ref(false);
+const generatingFromConversation = ref(false);
 const deleting = ref(false);
 const recognizing = ref(false);
 const saveMessage = ref('');
@@ -333,6 +376,7 @@ const rebuildingProfile = ref(false);
 const profileData = ref(null);
 const profileError = ref('');
 const form = reactive(createEmptyForm(selectedDate.value));
+const generateForm = reactive({ chatId: '', recordDate: selectedDate.value });
 const planForm = reactive({ concern: '', periodType: 'weekly', lookbackDays: 14 });
 
 function createEmptyForm(dateStr) {
@@ -347,6 +391,46 @@ function formatDateTime(value) {
   return Number.isNaN(date.getTime())
     ? value
     : date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+function getChatStorageKey() {
+  const userId = authState.user?.userId;
+  return userId ? `chatData:${userId}` : 'chatData:guest';
+}
+function loadLocalChatData() {
+  try {
+    const savedData = localStorage.getItem(getChatStorageKey());
+    return savedData ? JSON.parse(savedData) : null;
+  } catch (error) {
+    console.error('load local chat data failed', error);
+    return null;
+  }
+}
+function normalizeLocalLine(line) {
+  return typeof line === 'string' ? line.replace(/\s+/g, ' ').trim() : '';
+}
+function isNoiseLocalLine(line) {
+  if (!line || line.length <= 2) return true;
+  const normalized = line.toLowerCase();
+  const keywords = [
+    'pdf', '生成pdf', '导出pdf', '导出为pdf', '生成 pdf', '导出 pdf',
+    '帮我生成pdf', '给我生成pdf', 'generate a pdf', '调用generate',
+    '查看我的情绪日历', '生成近期情绪报告的pdf'
+  ];
+  return keywords.some((item) => normalized.includes(item));
+}
+function buildRawTextFromLocalConversation(chatId) {
+  if (!chatId) return '';
+  const localChatData = loadLocalChatData();
+  const entries = Array.isArray(localChatData?.messagesMap) ? localChatData.messagesMap : [];
+  const matched = entries.find((item) => Array.isArray(item) && item[0] === chatId);
+  const messages = Array.isArray(matched?.[1]) ? matched[1] : [];
+  const lines = messages
+    .filter((item) => item?.role === 'user')
+    .flatMap((item) => String(item?.content || '').split('\n'))
+    .map(normalizeLocalLine)
+    .filter(Boolean)
+    .filter((line) => !isNoiseLocalLine(line));
+  return Array.from(new Set(lines)).join('\n');
 }
 function buildCalendar(year, month) {
   const firstDay = new Date(year, month, 1);
@@ -371,6 +455,10 @@ function buildCalendar(year, month) {
 const calendarCells = computed(() => buildCalendar(currentYear.value, currentMonth.value));
 const currentDiaries = computed(() => diaries.value.filter((item) => item.recordDate === selectedDate.value));
 const canSubmit = computed(() => Boolean(form.rawText.trim() && form.recordDate));
+const conversationOptions = computed(() => conversations.value.map((item) => ({
+  value: item.conversationId,
+  label: buildConversationLabel(item)
+})));
 
 function prevMonth() {
   if (currentMonth.value === 0) {
@@ -389,6 +477,7 @@ function hasDiary(dateStr) { return diaries.value.some((item) => item.recordDate
 function selectDate(dateStr) {
   selectedDate.value = dateStr;
   if (!selectedDiaryId.value) form.recordDate = dateStr;
+  generateForm.recordDate = dateStr;
 }
 
 async function loadAllDiaries() {
@@ -398,6 +487,40 @@ async function loadAllDiaries() {
     dayError.value = '';
   } catch (error) {
     dayError.value = error?.response?.data?.message || '加载日记失败，请检查后端接口。';
+  }
+}
+async function loadConversations() {
+  const localConversationMap = new Map();
+  try {
+    const savedData = localStorage.getItem(getChatStorageKey());
+    if (savedData) {
+      const parsed = JSON.parse(savedData);
+      const localSessions = Array.isArray(parsed?.sessions) ? parsed.sessions : [];
+      localSessions.forEach((item) => {
+        if (item?.id) {
+          localConversationMap.set(item.id, {
+            conversationId: item.id,
+            messageCount: 0,
+            lastUpdateTime: null
+          });
+        }
+      });
+    }
+  } catch (error) {
+    console.error('load local conversations failed', error);
+  }
+  try {
+    const res = await getAllConversations();
+    const remoteList = Array.isArray(res.data) ? res.data : [];
+    remoteList.forEach((item) => {
+      if (item?.conversationId) {
+        localConversationMap.set(item.conversationId, item);
+      }
+    });
+    conversations.value = Array.from(localConversationMap.values());
+  } catch (error) {
+    conversations.value = Array.from(localConversationMap.values());
+    console.error('load conversations failed', error);
   }
 }
 async function loadSelectedDate() {
@@ -433,6 +556,10 @@ function buildRecognitionFromDiary(item) {
     comfortMessage: '',
     suggestions: []
   };
+}
+function buildConversationLabel(item) {
+  const title = item?.conversationId || 'conversation';
+  return title;
 }
 function pickDiary(item) {
   selectedDiaryId.value = item.id;
@@ -483,6 +610,52 @@ async function submitDiary() {
     recognitionError.value = error?.response?.data?.message || '保存失败，请检查后端服务或数据库状态。';
   } finally {
     saving.value = false;
+  }
+}
+async function submitGenerateFromConversation() {
+  if (!generateForm.chatId) {
+    recognitionError.value = '请先选择一个聊天会话。';
+    activeTab.value = 'diary';
+    return;
+  }
+  generatingFromConversation.value = true;
+  recognitionError.value = '';
+  saveMessage.value = '';
+  try {
+    let res;
+    try {
+      res = await generateDiaryFromConversation({
+        chatId: generateForm.chatId,
+        recordDate: generateForm.recordDate || selectedDate.value
+      });
+    } catch (error) {
+      const localRawText = buildRawTextFromLocalConversation(generateForm.chatId);
+      if (!localRawText) {
+        throw error;
+      }
+      res = await createEmotionDiary({
+        chatId: generateForm.chatId,
+        recordDate: generateForm.recordDate || selectedDate.value,
+        rawText: localRawText,
+        source: 'manual'
+      });
+    }
+    const diary = res.data;
+    upsertDiary(diary);
+    selectedDiaryId.value = diary.id;
+    selectedDate.value = diary.recordDate;
+    generateForm.recordDate = diary.recordDate;
+    applyDiaryToForm(diary);
+    recognition.value = diary.recognition || buildRecognitionFromDiary(diary);
+    saveMessage.value = '已根据会话生成当天情绪日记。';
+    await loadSelectedDate();
+    await loadTrends(selectedRangeDays.value);
+    activeTab.value = 'recognition';
+  } catch (error) {
+    recognitionError.value = error?.response?.data?.message || '根据会话生成日记失败，请稍后重试。';
+    activeTab.value = 'diary';
+  } finally {
+    generatingFromConversation.value = false;
   }
 }
 async function runRecognition() {
@@ -564,9 +737,13 @@ async function loadOrRebuildProfile(force = false) {
   try { profileData.value = (await getLatestGrowthProfile()).data; } catch {}
 }
 
-watch(selectedDate, () => { if (!selectedDiaryId.value) form.recordDate = selectedDate.value; });
+watch(selectedDate, () => {
+  if (!selectedDiaryId.value) form.recordDate = selectedDate.value;
+  if (!generateForm.recordDate) generateForm.recordDate = selectedDate.value;
+});
 watch([currentYear, currentMonth], async () => { await loadAllDiaries(); });
 onMounted(async () => {
+  await loadConversations();
   await loadAllDiaries();
   await loadSelectedDate();
   await loadTrends(30);
@@ -585,6 +762,7 @@ onMounted(async () => {
 .hint{margin:4px 0 0;font-size:13px;line-height:1.6;color:#64748b}
 .chip{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;background:#e0f2fe;color:#0369a1;font-size:12px;font-weight:600}
 .card{border-radius:18px;background:#f8fafc;border:1px solid #e2e8f0;padding:14px}
+.generate-card{margin-bottom:16px;border-radius:18px;background:linear-gradient(135deg,#ecfeff,#f8fafc);border:1px solid #bae6fd;padding:14px}
 .diary-card{flex:1;min-height:0;display:flex;flex-direction:column}
 .calendar-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
 .month-label{font-weight:700;color:#0f172a}

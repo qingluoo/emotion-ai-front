@@ -78,7 +78,34 @@
             {{ msg.role === 'user' ? '我' : 'AI' }}
           </div>
           <div class="bubble">
-            <div class="text">{{ msg.content }}</div>
+            <div class="text markdown-body" v-html="renderMessageContent(msg.content)"></div>
+            <div v-if="msg.attachments?.length" class="attachment-list">
+              <div
+                v-for="(attachment, attachmentIdx) in msg.attachments"
+                :key="`${idx}-${attachmentIdx}`"
+                class="attachment-card"
+              >
+                <div class="attachment-main">
+                  <div class="attachment-name">{{ attachment.fileName }}</div>
+                  <div class="attachment-meta">
+                    {{ attachment.mimeType || 'application/octet-stream' }}
+                    <span v-if="attachment.fileSizeLabel"> · {{ attachment.fileSizeLabel }}</span>
+                  </div>
+                </div>
+                <div class="attachment-actions">
+                  <button class="btn btn-ghost btn-small" @click="downloadAttachment(attachment)">
+                    下载
+                  </button>
+                  <button
+                    v-if="attachment.mimeType === 'application/pdf'"
+                    class="btn btn-primary btn-small"
+                    @click="previewAttachment(attachment)"
+                  >
+                    预览
+                  </button>
+                </div>
+              </div>
+            </div>
             <div class="time">{{ msg.time }}</div>
           </div>
         </div>
@@ -344,6 +371,106 @@ const showNotice = (message, type = 'info', duration = 3200) => {
   }
 };
 
+const createMessage = (role, content) => ({
+  role,
+  content,
+  time: formatTime(),
+  attachments: []
+});
+
+const ensureLastAiMessage = (chatId) => {
+  const list = messagesMap.get(chatId) || [];
+  const last = list[list.length - 1];
+  if (!last || last.role !== 'ai') {
+    const msg = createMessage('ai', '');
+    list.push(msg);
+    messagesMap.set(chatId, list);
+    return msg;
+  }
+  if (!Array.isArray(last.attachments)) {
+    last.attachments = [];
+  }
+  return last;
+};
+
+const formatFileSize = (base64) => {
+  if (!base64) return '';
+  const padding = (base64.match(/=*$/) || [''])[0].length;
+  const bytes = Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const escapeHtml = (value = '') =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const applyInlineMarkdown = (value = '') =>
+  value
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+
+const renderMessageContent = (content = '') => {
+  if (!content) return '';
+
+  const normalized = escapeHtml(content).replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
+  const html = [];
+  let inList = false;
+
+  const closeList = () => {
+    if (inList) {
+      html.push('</ul>');
+      inList = false;
+    }
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+
+    if (!line) {
+      closeList();
+      continue;
+    }
+
+    if (/^---+$/.test(line)) {
+      closeList();
+      html.push('<hr />');
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      closeList();
+      const level = headingMatch[1].length;
+      html.push(`<h${level}>${applyInlineMarkdown(headingMatch[2])}</h${level}>`);
+      continue;
+    }
+
+    const bulletMatch = line.match(/^[-*]\s+(.*)$/);
+    if (bulletMatch) {
+      if (!inList) {
+        html.push('<ul>');
+        inList = true;
+      }
+      html.push(`<li>${applyInlineMarkdown(bulletMatch[1])}</li>`);
+      continue;
+    }
+
+    closeList();
+    html.push(`<p>${applyInlineMarkdown(line)}</p>`);
+  }
+
+  closeList();
+  return html.join('');
+};
+
 const markErrorState = (message, duration = 4500) => {
   setVoiceState(VOICE_STATES.ERROR);
   showNotice(message, 'error', duration);
@@ -601,11 +728,7 @@ const switchChat = (id) => {
 
 const appendMessage = (chatId, role, content) => {
   const list = messagesMap.get(chatId) || [];
-  const msg = {
-    role,
-    content,
-    time: formatTime()
-  };
+  const msg = createMessage(role, content);
   list.push(msg);
   messagesMap.set(chatId, list);
 
@@ -624,15 +747,14 @@ const appendAiChunk = (chatId, chunk) => {
   const last = list[list.length - 1];
 
   if (!last || last.role !== 'ai') {
-    list.push({
-      role: 'ai',
-      content: chunk,
-      time: formatTime()
-    });
-  } else {
-    last.content += chunk;
-    last.time = formatTime();
-  }
+      list.push(createMessage('ai', chunk));
+    } else {
+      last.content += chunk;
+      last.time = formatTime();
+      if (!Array.isArray(last.attachments)) {
+        last.attachments = [];
+      }
+    }
 
   messagesMap.set(chatId, list);
   const session = sessions.find((s) => s.id === chatId);
@@ -641,6 +763,64 @@ const appendAiChunk = (chatId, chunk) => {
     session.lastMessage = current.slice(0, 30);
   }
 
+  nextTickScroll();
+  saveToLocalStorage();
+};
+
+const setAiMessage = (chatId, content) => {
+  const list = messagesMap.get(chatId) || [];
+  const last = list[list.length - 1];
+
+  if (!last || last.role !== 'ai') {
+      list.push(createMessage('ai', content));
+    } else {
+      last.content = content;
+      last.time = formatTime();
+      if (!Array.isArray(last.attachments)) {
+        last.attachments = [];
+      }
+    }
+
+  messagesMap.set(chatId, list);
+  const session = sessions.find((s) => s.id === chatId);
+  if (session) {
+    session.lastMessage = content.slice(0, 30);
+  }
+
+  nextTickScroll();
+  saveToLocalStorage();
+};
+
+const appendAgentStep = (chatId, content) => {
+  if (!content) return;
+  appendAiChunk(chatId, `\n[分析步骤] ${content}`);
+};
+
+const addAttachmentToAiMessage = (chatId, payload) => {
+  const fileBase64 = payload?.fileBase64;
+  if (!fileBase64) {
+    showNotice('未收到可展示的文件内容', 'warning');
+    return;
+  }
+
+  const lastAiMessage = ensureLastAiMessage(chatId);
+  const attachment = {
+    fileName: payload?.fileName || 'download.bin',
+    mimeType: payload?.mimeType || 'application/octet-stream',
+    fileBase64,
+    fileSizeLabel: formatFileSize(fileBase64)
+  };
+
+  const exists = lastAiMessage.attachments.some(
+    (item) => item.fileName === attachment.fileName && item.fileBase64 === attachment.fileBase64
+  );
+  if (!exists) {
+    lastAiMessage.attachments.push(attachment);
+    lastAiMessage.time = formatTime();
+  }
+
+  const list = messagesMap.get(chatId) || [];
+  messagesMap.set(chatId, list);
   nextTickScroll();
   saveToLocalStorage();
 };
@@ -727,11 +907,97 @@ const startStream = (url, chatId, options = {}) => {
   };
 };
 
+const startChatEventStream = (url, chatId, options = {}) => {
+  const {
+    onComplete = null,
+    includeAgentSteps = true
+  } = options;
+
+  eventSource = new EventSource(url);
+  let aiBuffer = '';
+
+  eventSource.addEventListener('delta', (event) => {
+    if (!event.data) return;
+    try {
+      const payload = JSON.parse(event.data);
+      const chunk = payload?.content || '';
+      if (!chunk) return;
+      aiBuffer += chunk;
+      setAiMessage(chatId, aiBuffer);
+    } catch (e) {
+      console.error('parse delta event failed', e);
+    }
+  });
+
+  eventSource.addEventListener('final', (event) => {
+    if (!event.data) return;
+    try {
+      const payload = JSON.parse(event.data);
+      const content = payload?.content || '';
+      if (content) {
+        aiBuffer = content;
+        setAiMessage(chatId, aiBuffer);
+      }
+    } catch (e) {
+      console.error('parse final event failed', e);
+    } finally {
+      closeStream();
+      if (typeof onComplete === 'function') {
+        onComplete();
+      } else {
+        resetVoiceStateIfQuiet();
+      }
+    }
+  });
+
+  eventSource.addEventListener('agent_step', (event) => {
+    if (!includeAgentSteps || !event.data) return;
+    try {
+      const payload = JSON.parse(event.data);
+      appendAgentStep(chatId, payload?.content || '');
+    } catch (e) {
+      console.error('parse agent_step event failed', e);
+    }
+  });
+
+  eventSource.addEventListener('file', (event) => {
+    if (!event.data) return;
+    try {
+      const payload = JSON.parse(event.data);
+      addAttachmentToAiMessage(chatId, payload);
+    } catch (e) {
+      console.error('parse file event failed', e);
+      showNotice('文件下载失败', 'warning');
+    }
+  });
+
+  eventSource.addEventListener('error', (event) => {
+    let message = '实时对话发生异常';
+    if (event?.data) {
+      try {
+        const payload = JSON.parse(event.data);
+        message = payload?.content || message;
+      } catch (e) {
+        message = event.data || message;
+      }
+    }
+    showNotice(message, 'warning');
+    closeStream();
+    resetVoiceStateIfQuiet();
+  });
+
+  eventSource.onerror = () => {
+    showNotice('实时回复连接已中断', 'warning');
+    closeStream();
+    resetVoiceStateIfQuiet();
+  };
+};
+
 const openEmotionStream = (message, chatId) => {
   setVoiceState(VOICE_STATES.THINKING);
 
   if (!voiceMode.value) {
-    startStream(getChatStreamUrl(message, chatId), chatId, {
+    startChatEventStream(getChatStreamUrl(message, chatId), chatId, {
       onComplete: () => setVoiceState(VOICE_STATES.IDLE)
     });
     return;
@@ -782,19 +1048,8 @@ const openEmotionStream = (message, chatId) => {
 
 const openManusStream = (message, chatId) => {
   setVoiceState(VOICE_STATES.THINKING);
-  startStream(getManusChatStreamUrl(message), chatId, {
-    eventNames: [
-      'start',
-      'step_start',
-      'thinking_start',
-      'thinking',
-      'acting_start',
-      'acting_complete',
-      'step_complete',
-      'complete'
-    ],
-    closeOnComplete: true,
-    showEventName: true,
+  startChatEventStream(getManusChatStreamUrl(message, chatId), chatId, {
+    includeAgentSteps: true,
     onComplete: () => setVoiceState(VOICE_STATES.IDLE)
   });
 };
@@ -807,6 +1062,41 @@ const base64ToBlob = (base64, mimeType) => {
     bytes[i] = binary.charCodeAt(i);
   }
   return new Blob([bytes], { type: mimeType });
+};
+
+const downloadAttachment = (attachment) => {
+  const fileBase64 = attachment?.fileBase64;
+  const fileName = attachment?.fileName || 'download.bin';
+  const mimeType = attachment?.mimeType || 'application/octet-stream';
+  if (!fileBase64) {
+    showNotice('未收到可下载的文件内容', 'warning');
+    return;
+  }
+
+  const blob = base64ToBlob(fileBase64, mimeType);
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+  showNotice(`文件已下载：${fileName}`, 'info');
+};
+
+const previewAttachment = (attachment) => {
+  const fileBase64 = attachment?.fileBase64;
+  const mimeType = attachment?.mimeType || 'application/octet-stream';
+  if (!fileBase64) {
+    showNotice('未收到可预览的文件内容', 'warning');
+    return;
+  }
+
+  const blob = base64ToBlob(fileBase64, mimeType);
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener,noreferrer');
+  setTimeout(() => URL.revokeObjectURL(url), 60 * 1000);
 };
 
 const base64ToArrayBuffer = (base64) => {
@@ -1220,7 +1510,8 @@ const mapConversationToSession = (conversation, index) => {
     ? messages.map((m) => ({
         role: m.messageType && m.messageType.toLowerCase().includes('user') ? 'user' : 'ai',
         content: m.content || '',
-        time: formatTimeFromTimestamp(m.timestamp)
+        time: formatTimeFromTimestamp(m.timestamp),
+        attachments: []
       }))
     : [];
 
@@ -1248,7 +1539,13 @@ const loadFromLocalStorage = () => {
       sessions.push(...data.sessions);
       messagesMap.clear();
       data.messagesMap.forEach(([key, value]) => {
-        messagesMap.set(key, value);
+          const normalizedValue = Array.isArray(value)
+            ? value.map((msg) => ({
+                ...msg,
+                attachments: Array.isArray(msg.attachments) ? msg.attachments : []
+              }))
+            : [];
+          messagesMap.set(key, normalizedValue);
       });
       currentChatId.value = data.currentChatId;
       sessionIndex = data.sessionIndex;
@@ -1336,3 +1633,100 @@ onBeforeUnmount(() => {
   setVoiceState(VOICE_STATES.IDLE);
 });
 </script>
+
+<style scoped>
+.attachment-list {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.markdown-body :deep(p) {
+  margin: 0 0 10px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3),
+.markdown-body :deep(h4),
+.markdown-body :deep(h5),
+.markdown-body :deep(h6) {
+  margin: 14px 0 8px;
+  line-height: 1.4;
+  font-weight: 700;
+}
+
+.markdown-body :deep(h1) { font-size: 22px; }
+.markdown-body :deep(h2) { font-size: 20px; }
+.markdown-body :deep(h3) { font-size: 18px; }
+.markdown-body :deep(h4) { font-size: 16px; }
+
+.markdown-body :deep(ul) {
+  margin: 8px 0 12px;
+  padding-left: 20px;
+}
+
+.markdown-body :deep(li) {
+  margin: 6px 0;
+  line-height: 1.7;
+}
+
+.markdown-body :deep(hr) {
+  border: 0;
+  border-top: 1px solid rgba(100, 116, 139, 0.3);
+  margin: 14px 0;
+}
+
+.markdown-body :deep(code) {
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.08);
+  font-size: 0.92em;
+}
+
+.attachment-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.attachment-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.attachment-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+  word-break: break-all;
+}
+
+.attachment-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.attachment-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.from-user .attachment-card {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.from-user .attachment-name,
+.from-user .attachment-meta {
+  color: inherit;
+}
+</style>
