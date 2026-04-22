@@ -56,6 +56,30 @@ body {
   color: #fff;
 }
 
+.nav-user {
+  border: 1px solid rgba(14, 116, 144, 0.14);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(236, 253, 245, 0.94));
+  color: #0f172a;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+}
+
+.nav-user:hover {
+  transform: translateY(-1px);
+  border-color: rgba(14, 116, 144, 0.22);
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.12);
+  background: linear-gradient(135deg, #ffffff, #ecfeff);
+}
+
+.nav-user:active {
+  transform: translateY(0);
+}
+
 .app-main {
   padding: 20px 24px 24px;
 }
@@ -425,6 +449,47 @@ body {
   word-break: break-word;
   line-height: 1.5;
   font-size: 14px;
+}
+
+.rag-source-list {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #f8fbff 0%, #eef6ff 100%);
+  border: 1px solid #dbeafe;
+}
+
+.rag-source-header {
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #2563eb;
+  letter-spacing: 0.04em;
+}
+
+.rag-source-card + .rag-source-card {
+  margin-top: 8px;
+}
+
+.rag-source-card {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(191, 219, 254, 0.9);
+}
+
+.rag-source-file {
+  font-size: 12px;
+  color: #475569;
+  word-break: break-word;
+}
+
+.rag-source-title {
+  margin-top: 2px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+  word-break: break-word;
 }
 
 .bubble .time {

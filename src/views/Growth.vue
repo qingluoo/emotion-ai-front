@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="page growth-layout">
     <aside class="sidebar">
       <div class="sidebar-head">
@@ -76,7 +76,23 @@
             </div>
             <button v-if="selectedDiaryId" class="btn btn-ghost btn-small" @click="resetForm">新建一条</button>
           </div>
-          <div class="generate-card">
+          <div class="entry-mode-switch">
+            <button
+              type="button"
+              :class="['entry-mode-btn', { active: diaryEntryMode === 'conversation' }]"
+              @click="diaryEntryMode = 'conversation'"
+            >
+              根据会话生成
+            </button>
+            <button
+              type="button"
+              :class="['entry-mode-btn', { active: diaryEntryMode === 'manual' }]"
+              @click="diaryEntryMode = 'manual'"
+            >
+              手动录入
+            </button>
+          </div>
+          <div v-if="diaryEntryMode === 'conversation'" class="generate-card">
             <div class="card-head">
               <div>
                 <h3>从聊天会话生成日记</h3>
@@ -86,12 +102,34 @@
             <div class="grid two">
               <label class="field">
                 <span>聊天会话</span>
-                <select v-model="generateForm.chatId" class="select-input">
-                  <option value="">请选择会话</option>
-                  <option v-for="item in conversationOptions" :key="item.value" :value="item.value">
-                    {{ item.label }}
-                  </option>
-                </select>
+                <div class="select-shell">
+                  <button
+                    type="button"
+                    :class="['select-trigger', { open: openDropdown === 'conversation', placeholder: !generateForm.chatId }]"
+                    @click="toggleDropdown('conversation')"
+                  >
+                    <span>{{ selectedConversationLabel }}</span>
+                    <i class="select-caret"></i>
+                  </button>
+                  <div v-if="openDropdown === 'conversation'" class="select-menu">
+                    <button
+                      type="button"
+                      :class="['select-option', { active: !generateForm.chatId }]"
+                      @click="selectConversation('')"
+                    >
+                      请选择会话
+                    </button>
+                    <button
+                      v-for="item in conversationOptions"
+                      :key="item.value"
+                      type="button"
+                      :class="['select-option', { active: generateForm.chatId === item.value }]"
+                      @click="selectConversation(item.value)"
+                    >
+                      {{ item.label }}
+                    </button>
+                  </div>
+                </div>
               </label>
               <label class="field">
                 <span>生成日期</span>
@@ -114,28 +152,92 @@
               当前没有从后端读取到可选会话。你可以先在聊天页发送一条消息，或者直接手动填写 chatId。
             </div>
           </div>
-          <div class="grid two">
+          <template v-else>
+            <div class="grid two">
+              <label class="field">
+                <span>记录日期</span>
+                <input v-model="form.recordDate" type="date" />
+              </label>
+              <label class="field">
+                <span>聊天会话 ID</span>
+                <input v-model="form.chatId" type="text" placeholder="可选" />
+              </label>
+              <label class="field">
+                <span>手动情绪标签</span>
+                <input v-model="form.emotionPrimary" type="text" placeholder="例如：焦虑" />
+              </label>
+              <label class="field">
+                <span>强度 1-10</span>
+                <input v-model.number="form.intensity" type="number" min="1" max="10" />
+              </label>
+              <label class="field">
+                <span>触发分类</span>
+                <div class="select-shell">
+                  <button
+                    type="button"
+                    :class="['select-trigger', { open: openDropdown === 'triggerCategory', placeholder: !form.triggerCategory }]"
+                    @click="toggleDropdown('triggerCategory')"
+                  >
+                    <span>{{ selectedTriggerCategoryLabel }}</span>
+                    <i class="select-caret"></i>
+                  </button>
+                  <div v-if="openDropdown === 'triggerCategory'" class="select-menu">
+                    <button
+                      type="button"
+                      :class="['select-option', { active: !form.triggerCategory }]"
+                      @click="selectTriggerCategory('')"
+                    >
+                      请选择分类
+                    </button>
+                    <button
+                      v-for="item in triggerEventOptions"
+                      :key="item"
+                      type="button"
+                      :class="['select-option', { active: form.triggerCategory === item }]"
+                      @click="selectTriggerCategory(item)"
+                    >
+                      {{ item }}
+                    </button>
+                  </div>
+                </div>
+              </label>
+              <label class="field">
+                <span>触发补充说明</span>
+                <input v-model="form.triggerDetail" type="text" placeholder="例如：妈妈催婚、和对象冷战、领导临时加任务" />
+              </label>
+            </div>
             <label class="field">
-              <span>记录日期</span>
-              <input v-model="form.recordDate" type="date" />
+              <span>情绪记录内容</span>
+              <textarea v-model="form.rawText" class="editor" placeholder="写下今天发生了什么。"></textarea>
             </label>
-            <label class="field">
-              <span>聊天会话 ID</span>
-              <input v-model="form.chatId" type="text" placeholder="可选" />
-            </label>
-            <label class="field">
-              <span>手动情绪标签</span>
-              <input v-model="form.emotionPrimary" type="text" placeholder="例如：焦虑" />
-            </label>
-            <label class="field">
-              <span>强度 1-10</span>
-              <input v-model.number="form.intensity" type="number" min="1" max="10" />
-            </label>
+          </template>
+          <div v-if="diaryEntryMode === 'manual' && hasRecognitionSuggestion" class="suggestion-card">
+            <div class="card-head">
+              <div>
+                <h3>AI 建议值</h3>
+                <p class="hint">先推断，再由你确认。下面这些值可以一键采纳，也可以继续手改。</p>
+              </div>
+              <button class="btn btn-primary btn-small" type="button" @click="applySuggestedAll">采纳全部</button>
+            </div>
+            <div class="suggestion-grid">
+              <div class="suggestion-item">
+                <span>主情绪建议</span>
+                <strong>{{ recognition.emotionPrimary || '待确认' }}</strong>
+                <button class="btn btn-ghost btn-small" type="button" @click="applySuggestedEmotion">采纳主情绪</button>
+              </div>
+              <div class="suggestion-item">
+                <span>强度建议</span>
+                <strong>{{ recognition.intensity || '-' }}<template v-if="recognition.intensity"> / 10</template></strong>
+                <p>{{ describeIntensity(recognition.intensity) }}</p>
+                <button class="btn btn-ghost btn-small" type="button" @click="applySuggestedIntensity">采纳强度</button>
+              </div>
+              <div class="suggestion-item full">
+                <span>触发事件建议</span>
+                <strong>{{ recognition.triggerEvent || '暂无明确触发事件' }}</strong>
+                <button class="btn btn-ghost btn-small" type="button" @click="applySuggestedTrigger">采纳触发事件</button>
+              </div>
+            </div>
           </div>
-          <label class="field">
-            <span>情绪记录内容</span>
-            <textarea v-model="form.rawText" class="editor" placeholder="写下今天发生了什么。"></textarea>
-          </label>
           <div class="actions">
             <button class="btn btn-primary" :disabled="saving || !canSubmit" @click="submitDiary">
               {{ saving ? '保存中...' : selectedDiaryId ? '保存修改' : '保存并识别' }}
@@ -154,36 +256,99 @@
           <div class="card-head">
             <div>
               <h2>情绪识别</h2>
-              <p class="hint">查看结构化识别结果和即时建议。</p>
+              <p class="hint">把“文本中直接能看到的内容”和“AI 推断判断”分开看，避免把推断当成事实。</p>
             </div>
           </div>
           <div v-if="recognitionError" class="status error">{{ recognitionError }}</div>
-          <div v-else-if="recognition" class="grid two">
-            <div class="metric"><span>主情绪</span><strong>{{ recognition.emotionPrimary || '待确认' }}</strong></div>
-            <div class="metric"><span>次情绪</span><strong>{{ recognition.emotionSecondary || '未识别' }}</strong></div>
-            <div class="metric"><span>强度</span><strong>{{ recognition.intensity || '-' }}</strong></div>
-            <div class="metric"><span>压力等级</span><strong>{{ recognition.stressLevel || '-' }}</strong></div>
-            <div class="block">
-              <h3>情绪摘要</h3>
-              <p>{{ recognition.summary || '暂无摘要' }}</p>
+          <div v-else-if="recognition" class="recognition-layout">
+            <div class="recognition-section">
+              <div class="section-head">
+                <h3>直接观察</h3>
+                <span class="section-tag direct">优先来自文本</span>
+              </div>
+              <div class="grid two">
+                <div class="metric"><span>主情绪</span><strong>{{ recognition.emotionPrimary || '待确认' }}</strong></div>
+                <div class="metric"><span>次情绪</span><strong>{{ recognition.emotionSecondary || '未识别' }}</strong></div>
+                <div class="block">
+                  <h3>情绪摘要</h3>
+                  <p>{{ recognition.summary || '暂无摘要' }}</p>
+                </div>
+                <div class="block">
+                  <h3>触发事件</h3>
+                  <p>{{ recognition.triggerEvent || '暂无明确触发事件' }}</p>
+                </div>
+                <div class="block full">
+                  <h3>身体反应</h3>
+                  <p>{{ recognition.bodyResponse || '暂无明显身体反应描述' }}</p>
+                </div>
+              </div>
             </div>
-            <div class="block">
-              <h3>触发事件</h3>
-              <p>{{ recognition.triggerEvent || '暂无明确触发事件' }}</p>
+            <div class="recognition-section">
+              <div class="section-head">
+                <h3>推断判断</h3>
+                <span class="section-tag inferred">AI 估计，仅供参考</span>
+              </div>
+              <div class="grid two">
+                <div class="metric">
+                  <span>情绪强度</span>
+                  <strong>{{ recognition.intensity || '-' }}</strong>
+                  <p class="metric-note">{{ describeIntensity(recognition.intensity) }}</p>
+                </div>
+                <div class="metric">
+                  <span>压力等级</span>
+                  <strong>{{ recognition.stressLevel || '-' }}</strong>
+                  <p class="metric-note">{{ describeStressLevel(recognition.stressLevel) }}</p>
+                </div>
+                <div class="metric">
+                  <span>风险等级</span>
+                  <strong>{{ recognition.riskLevel ?? '-' }}</strong>
+                  <p class="metric-note">{{ describeRiskLevel(recognition.riskLevel) }}</p>
+                </div>
+                <div class="metric">
+                  <span>置信度</span>
+                  <strong>{{ describeConfidence(recognition.confidence) }}</strong>
+                  <p class="metric-note">对本次结构化判断的整体把握</p>
+                </div>
+                <div class="metric">
+                  <span>情绪正负性</span>
+                  <strong>{{ formatConfidence(recognition.valence) }}</strong>
+                  <p class="metric-note">越高越偏积极，越低越偏消耗</p>
+                </div>
+              </div>
             </div>
-            <div class="block">
-              <h3>身体反应</h3>
-              <p>{{ recognition.bodyResponse || '暂无明显身体反应描述' }}</p>
+            <div class="grid two">
+              <div class="block warm">
+                <h3>即时安慰</h3>
+                <p>{{ recognition.comfortMessage || '你已经在认真面对自己的感受。' }}</p>
+              </div>
             </div>
-            <div class="block warm">
-              <h3>即时安慰</h3>
-              <p>{{ recognition.comfortMessage || '你已经在认真面对自己的感受。' }}</p>
-            </div>
-            <div class="block full">
-              <h3>建议行动</h3>
-              <ul class="plain-list">
-                <li v-for="(item, index) in recognition.suggestions || []" :key="index">{{ item }}</li>
-              </ul>
+            <div class="scale-card">
+              <div class="card-head">
+                <div>
+                  <h3>强度与评级标准</h3>
+                  <p class="hint">AI 会先按这个口径给建议分，你可以按自己的真实体验修改。</p>
+                </div>
+              </div>
+              <div class="scale-grid">
+                <div class="scale-block">
+                  <h4>情绪强度 1-10</h4>
+                  <ul class="plain-list compact">
+                    <li v-for="item in intensityScaleGuide" :key="item.label"><strong>{{ item.label }}</strong>{{ item.text }}</li>
+                  </ul>
+                </div>
+                <div class="scale-block">
+                  <h4>压力等级 1-10</h4>
+                  <ul class="plain-list compact">
+                    <li v-for="item in stressScaleGuide" :key="item.label"><strong>{{ item.label }}</strong>{{ item.text }}</li>
+                  </ul>
+                </div>
+                <div class="scale-block">
+                  <h4>风险等级 0-5</h4>
+                  <ul class="plain-list compact">
+                    <li v-for="item in riskScaleGuide" :key="item.label"><strong>{{ item.label }}</strong>{{ item.text }}</li>
+                  </ul>
+                </div>
+              </div>
             </div>
           </div>
           <div v-else class="empty">先在“日记录入”模块保存一条记录。</div>
@@ -259,12 +424,27 @@
           <div class="grid two">
             <label class="field">
               <span>计划周期</span>
-              <select v-model="planForm.periodType" class="select-input">
-                <option value="daily">daily</option>
-                <option value="weekly">weekly</option>
-                <option value="monthly">monthly</option>
-                <option value="quarterly">quarterly</option>
-              </select>
+              <div class="select-shell">
+                <button
+                  type="button"
+                  :class="['select-trigger', { open: openDropdown === 'planPeriod' }]"
+                  @click="toggleDropdown('planPeriod')"
+                >
+                  <span>{{ selectedPlanPeriodLabel }}</span>
+                  <i class="select-caret"></i>
+                </button>
+                <div v-if="openDropdown === 'planPeriod'" class="select-menu">
+                  <button
+                    v-for="item in planPeriodOptions"
+                    :key="item.value"
+                    type="button"
+                    :class="['select-option', { active: planForm.periodType === item.value }]"
+                    @click="selectPlanPeriod(item.value)"
+                  >
+                    {{ item.label }}
+                  </button>
+                </div>
+              </div>
             </label>
             <label class="field">
               <span>参考天数</span>
@@ -324,7 +504,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import {
   createEmotionDiary,
   deleteEmotionDiary,
@@ -341,6 +521,8 @@ import {
 } from '../api/emotionApp';
 import { authState } from '../utils/auth';
 
+const today = new Date();
+
 const tabs = [
   { key: 'diary', label: '日记录入' },
   { key: 'recognition', label: '情绪识别' },
@@ -348,9 +530,36 @@ const tabs = [
   { key: 'plan', label: '成长规划' },
   { key: 'profile', label: '画像摘要' }
 ];
+const triggerEventOptions = ['工作', '学业', '人际', '亲密关系', '家庭', '健康', '财务压力', '生活变动', '自我期待', '其他'];
+const planPeriodOptions = [
+  { value: 'daily', label: '每日' },
+  { value: 'weekly', label: '每周' },
+  { value: 'monthly', label: '每月' },
+  { value: 'quarterly', label: '每季度' }
+];
+const intensityScaleGuide = [
+  { label: '1-2', text: '情绪强度1-10，基本不影响当前生活。' },
+  { label: '3-4', text: '有轻微不适，但能维持日常。' },
+  { label: '5-6', text: '已影响部分状态，如效率、睡眠、专注或社交。' },
+  { label: '7-8', text: '影响明显，情绪持续占据注意力，恢复较困难。' },
+  { label: '9-10', text: '非常强烈，接近失控、崩溃或严重干扰。' }
+];
+const stressScaleGuide = [
+  { label: '1-2', text: '压力轻，偶尔在意，不明显影响状态' },
+  { label: '3-4', text: '有持续紧绷感，但还能维持日常' },
+  { label: '5-6', text: '已开始影响专注、睡眠、效率或社交' },
+  { label: '7-8', text: '压力负担明显，恢复困难，反复占据注意力' },
+  { label: '9-10', text: '高度紧绷，明显影响功能，接近失控或崩溃' }
+];
+const riskScaleGuide = [
+  { label: '0', text: '无明显风险。' },
+  { label: '1', text: '轻度失眠或明显低落。' },
+  { label: '2', text: '持续失眠，明显无助的疲惫。' },
+  { label: '3', text: '强烈头晕，失控感或功能明显受损。' },
+  { label: '4-5', text: '出现自伤暗示、明确计划或需要尽快人工关怀。' }
+];
 const activeTab = ref('diary');
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
-const today = new Date();
 const currentYear = ref(today.getFullYear());
 const currentMonth = ref(today.getMonth());
 const selectedDate = ref(formatDate(today));
@@ -375,12 +584,14 @@ const planError = ref('');
 const rebuildingProfile = ref(false);
 const profileData = ref(null);
 const profileError = ref('');
+const openDropdown = ref('');
+const diaryEntryMode = ref('conversation');
 const form = reactive(createEmptyForm(selectedDate.value));
 const generateForm = reactive({ chatId: '', recordDate: selectedDate.value });
 const planForm = reactive({ concern: '', periodType: 'weekly', lookbackDays: 14 });
 
 function createEmptyForm(dateStr) {
-  return { chatId: '', recordDate: dateStr, rawText: '', emotionPrimary: '', intensity: 5 };
+  return { chatId: '', recordDate: dateStr, rawText: '', emotionPrimary: '', intensity: 5, triggerCategory: '', triggerDetail: '' };
 }
 function formatDate(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -459,6 +670,66 @@ const conversationOptions = computed(() => conversations.value.map((item) => ({
   value: item.conversationId,
   label: buildConversationLabel(item)
 })));
+const selectedConversationLabel = computed(() => {
+  const matched = conversationOptions.value.find((item) => item.value === generateForm.chatId);
+  return matched?.label || generateForm.chatId || '请选择会话';
+});
+const selectedTriggerCategoryLabel = computed(() => form.triggerCategory || '请选择分类');
+const selectedPlanPeriodLabel = computed(() => {
+  const matched = planPeriodOptions.find((item) => item.value === planForm.periodType);
+  return matched?.label || '请选择周期';
+});
+const hasRecognitionSuggestion = computed(() => Boolean(
+  recognition.value && (
+    recognition.value.emotionPrimary ||
+    recognition.value.intensity != null ||
+    recognition.value.triggerEvent
+  )
+));
+
+function toggleDropdown(name) {
+  openDropdown.value = openDropdown.value === name ? '' : name;
+}
+function closeDropdown() {
+  openDropdown.value = '';
+}
+function selectConversation(value) {
+  generateForm.chatId = value;
+  closeDropdown();
+}
+function selectTriggerCategory(value) {
+  form.triggerCategory = value;
+  closeDropdown();
+}
+function selectPlanPeriod(value) {
+  planForm.periodType = value;
+  closeDropdown();
+}
+function applySuggestedEmotion() {
+  if (!recognition.value?.emotionPrimary) return;
+  form.emotionPrimary = recognition.value.emotionPrimary;
+}
+function applySuggestedIntensity() {
+  if (recognition.value?.intensity == null) return;
+  form.intensity = recognition.value.intensity;
+}
+function applySuggestedTrigger() {
+  if (!recognition.value?.triggerEvent) return;
+  const parsed = parseTriggerEvent(recognition.value.triggerEvent);
+  form.triggerCategory = parsed.category;
+  form.triggerDetail = parsed.detail;
+}
+function applySuggestedAll() {
+  applySuggestedEmotion();
+  applySuggestedIntensity();
+  applySuggestedTrigger();
+}
+function handleGlobalClick(event) {
+  if (event.target instanceof Element && event.target.closest('.select-shell')) {
+    return;
+  }
+  closeDropdown();
+}
 
 function prevMonth() {
   if (currentMonth.value === 0) {
@@ -538,11 +809,14 @@ async function loadSelectedDate() {
   }
 }
 function applyDiaryToForm(item) {
+  const parsedTrigger = parseTriggerEvent(item.triggerEvent);
   form.chatId = item.chatId || '';
   form.recordDate = item.recordDate || selectedDate.value;
   form.rawText = item.rawText || '';
   form.emotionPrimary = item.emotionPrimary || '';
   form.intensity = item.intensity || 5;
+  form.triggerCategory = parsedTrigger.category;
+  form.triggerDetail = parsedTrigger.detail;
 }
 function buildRecognitionFromDiary(item) {
   if (!item) return null;
@@ -554,7 +828,12 @@ function buildRecognitionFromDiary(item) {
     bodyResponse: item.bodyResponse,
     summary: item.aiSummary,
     comfortMessage: '',
-    suggestions: []
+    suggestions: [],
+    stressLevel: item.intensity,
+    riskLevel: null,
+    confidence: null,
+    valence: null,
+    arousal: null
   };
 }
 function buildConversationLabel(item) {
@@ -565,6 +844,7 @@ function pickDiary(item) {
   selectedDiaryId.value = item.id;
   selectedDate.value = item.recordDate;
   applyDiaryToForm(item);
+  diaryEntryMode.value = 'manual';
   recognition.value = item.recognition || buildRecognitionFromDiary(item);
   recognitionError.value = '';
   saveMessage.value = '';
@@ -572,10 +852,75 @@ function pickDiary(item) {
 }
 function resetForm() {
   selectedDiaryId.value = null;
+  diaryEntryMode.value = 'conversation';
   Object.assign(form, createEmptyForm(selectedDate.value));
   recognition.value = null;
   recognitionError.value = '';
   saveMessage.value = '';
+}
+function parseTriggerEvent(value) {
+  if (!value) {
+    return { category: '', detail: '' };
+  }
+  const separatorIndex = value.indexOf('|');
+  if (separatorIndex < 0) {
+    return triggerEventOptions.includes(value)
+      ? { category: value, detail: '' }
+      : { category: '', detail: value };
+  }
+  return {
+    category: value.slice(0, separatorIndex).trim(),
+    detail: value.slice(separatorIndex + 1).trim()
+  };
+}
+function buildTriggerEventValue() {
+  const category = form.triggerCategory.trim();
+  const detail = form.triggerDetail.trim();
+  if (category && detail) {
+    return `${category}|${detail}`;
+  }
+  if (category) {
+    return category;
+  }
+  return detail || null;
+}
+function describeIntensity(value) {
+  if (value == null) return '等待 AI 推断或由你手动设置';
+  if (value <= 2) return '轻微波动，基本不影响当前生活';
+  if (value <= 4) return '有明显不舒服，但还能维持日常';
+  if (value <= 6) return '已影响部分状态，如效率、睡眠或专注';
+  if (value <= 8) return '影响明显，情绪持续占据注意力';
+  return '非常强烈，接近失控或严重受扰';
+}
+function describeStressLevel(value) {
+  if (value == null) return '等待 AI 推断';
+  if (value <= 2) return '压力负担较轻';
+  if (value <= 4) return '有持续紧绷感，但还能扛住';
+  if (value <= 6) return '压力已开始消耗你的精力';
+  if (value <= 8) return '压力负担明显，恢复较困难';
+  return '高度紧绷，已明显影响状态';
+}
+function describeRiskLevel(value) {
+  if (value == null) return '当前未给出明确风险判断';
+  if (value <= 0) return '未识别到明显风险信号';
+  if (value === 1) return '轻度脆弱或明显低落';
+  if (value === 2) return '存在持续消耗，建议尽快自我照顾';
+  if (value === 3) return '风险偏高，建议尽快寻求可信赖支持';
+  return '高风险信号，建议优先联系专业帮助';
+}
+function formatConfidence(value) {
+  if (value == null) return '--';
+  const num = Number(value);
+  if (Number.isNaN(num)) return '--';
+  return `${Math.round(num * 100)}%`;
+}
+function describeConfidence(value) {
+  if (value == null) return '未提供';
+  const num = Number(value);
+  if (Number.isNaN(num)) return '未提供';
+  if (num < 0.45) return '较低';
+  if (num < 0.75) return '中等';
+  return '较高';
 }
 function upsertDiary(item) {
   const index = diaries.value.findIndex((entry) => entry.id === item.id);
@@ -593,6 +938,7 @@ async function submitDiary() {
     rawText: form.rawText.trim(),
     emotionPrimary: form.emotionPrimary.trim() || null,
     intensity: form.intensity,
+    triggerEvent: buildTriggerEventValue(),
     source: 'manual'
   };
   try {
@@ -743,12 +1089,16 @@ watch(selectedDate, () => {
 });
 watch([currentYear, currentMonth], async () => { await loadAllDiaries(); });
 onMounted(async () => {
+  document.addEventListener('click', handleGlobalClick);
   await loadConversations();
   await loadAllDiaries();
   await loadSelectedDate();
   await loadTrends(30);
   await loadLatestPlan();
   await loadOrRebuildProfile(false);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener('click', handleGlobalClick);
 });
 </script>
 
@@ -763,6 +1113,24 @@ onMounted(async () => {
 .chip{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;background:#e0f2fe;color:#0369a1;font-size:12px;font-weight:600}
 .card{border-radius:18px;background:#f8fafc;border:1px solid #e2e8f0;padding:14px}
 .generate-card{margin-bottom:16px;border-radius:18px;background:linear-gradient(135deg,#ecfeff,#f8fafc);border:1px solid #bae6fd;padding:14px}
+.entry-mode-switch{display:inline-flex;gap:8px;padding:6px;border-radius:16px;background:#f8fafc;border:1px solid #e2e8f0;margin:16px 0}
+.entry-mode-btn{
+  border:none;
+  background:transparent;
+  color:#475569;
+  padding:10px 16px;
+  border-radius:12px;
+  font:inherit;
+  font-weight:600;
+  cursor:pointer;
+  transition:background .18s ease,color .18s ease,box-shadow .18s ease;
+}
+.entry-mode-btn.active{
+  background:linear-gradient(135deg,#0f766e,#14b8a6);
+  color:#fff;
+  box-shadow:0 12px 24px rgba(15,118,110,.18);
+}
+.entry-mode-btn:hover:not(.active){background:#eef2f7;color:#0f172a}
 .diary-card{flex:1;min-height:0;display:flex;flex-direction:column}
 .calendar-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
 .month-label{font-weight:700;color:#0f172a}
@@ -783,10 +1151,110 @@ onMounted(async () => {
 .panel-scroll{height:100%;overflow:auto;border-radius:18px;background:#f8fafc;border:1px solid #e2e8f0;padding:18px}
 .grid{display:grid;gap:12px}.grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}.grid.one{grid-template-columns:1fr}
 .field{display:grid;gap:6px;font-size:13px;color:#475569}.field span{font-weight:600}
-.field input,.editor,.select-input{width:100%;border:1px solid #dbe2ea;border-radius:12px;padding:10px 12px;font:inherit;color:#0f172a;background:#fff}
-.field input:focus,.editor:focus,.select-input:focus{outline:none;border-color:#0f766e;box-shadow:0 0 0 3px rgba(15,118,110,.12)}
+.field input,.editor,.select-input{width:100%;border:1px solid #dbe2ea;border-radius:16px;padding:12px 14px;font:inherit;color:#0f172a;background:#fff}
+.field input:focus,.editor:focus,.select-input:focus{outline:none;border-color:#0f766e;box-shadow:0 0 0 4px rgba(15,118,110,.12)}
+.suggestion-card,.scale-card,.recognition-section{border-radius:18px;background:#fff;border:1px solid #e2e8f0;padding:16px}
+.suggestion-card{background:linear-gradient(135deg,#f0fdfa,#ffffff)}
+.suggestion-grid,.scale-grid{display:grid;gap:12px}
+.suggestion-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.suggestion-item{border-radius:14px;background:#f8fafc;border:1px solid #e2e8f0;padding:14px;display:grid;gap:8px}
+.suggestion-item span,.scale-block h4,.section-head h3{margin:0;font-size:13px;color:#64748b}
+.suggestion-item strong{font-size:18px;color:#0f172a}
+.suggestion-item p,.metric-note{margin:0;font-size:12px;line-height:1.6;color:#64748b}
+.suggestion-item.full{grid-column:1 / -1}
+.scale-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.scale-block{border-radius:14px;background:#f8fafc;border:1px solid #e2e8f0;padding:14px}
+.plain-list.compact{padding-left:16px}
+.plain-list.compact li{margin-bottom:6px;font-size:13px}
+.plain-list.compact strong{margin-right:4px}
+.recognition-layout{display:grid;gap:16px}
+.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+.section-tag{display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;font-size:12px;font-weight:600}
+.section-tag.direct{background:#e0f2fe;color:#0369a1}
+.section-tag.inferred{background:#ecfccb;color:#3f6212}
+.select-shell{position:relative}
+.select-trigger{
+  width:100%;
+  min-height:48px;
+  border:1px solid #dbe2ea;
+  border-radius:16px;
+  padding:12px 14px;
+  background:linear-gradient(180deg,rgba(255,255,255,.98),rgba(240,253,250,.92));
+  color:#0f172a;
+  font:inherit;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  cursor:pointer;
+  box-shadow:0 10px 22px rgba(15,23,42,.04);
+  transition:border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+.select-trigger:hover{border-color:#99d5cc;box-shadow:0 12px 24px rgba(15,23,42,.06)}
+.select-trigger.open{border-color:#0f766e;box-shadow:0 0 0 4px rgba(15,118,110,.12),0 14px 28px rgba(15,23,42,.08)}
+.select-trigger.placeholder{color:#94a3b8}
+.select-caret{
+  width:12px;
+  height:12px;
+  flex:none;
+  border-right:2px solid #0f766e;
+  border-bottom:2px solid #0f766e;
+  transform:rotate(45deg) translateY(-2px);
+  transition:transform .18s ease;
+}
+.select-trigger.open .select-caret{transform:rotate(-135deg) translate(-1px,1px)}
+.select-menu{
+  position:absolute;
+  top:calc(100% + 8px);
+  left:0;
+  right:0;
+  z-index:20;
+  padding:8px;
+  border-radius:18px;
+  border:1px solid rgba(148,163,184,.22);
+  background:rgba(255,255,255,.98);
+  box-shadow:0 18px 40px rgba(15,23,42,.14);
+  max-height:260px;
+  overflow:auto;
+}
+.select-option{
+  width:100%;
+  border:none;
+  background:transparent;
+  color:#0f172a;
+  font:inherit;
+  text-align:left;
+  padding:11px 12px;
+  border-radius:12px;
+  cursor:pointer;
+  transition:background .15s ease, color .15s ease, transform .15s ease;
+}
+.select-option:hover{background:#ecfdf5;color:#0f766e;transform:translateX(2px)}
+.select-option.active{background:linear-gradient(135deg,#ccfbf1,#ecfeff);color:#0f766e;font-weight:600}
+.select-input{
+  appearance:none;
+  -webkit-appearance:none;
+  -moz-appearance:none;
+  padding-right:44px;
+  background:
+    linear-gradient(180deg,rgba(255,255,255,.98),rgba(240,253,250,.92)),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3 5.5L7 9L11 5.5' stroke='%230f766e' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat,no-repeat;
+  background-position:0 0,right 14px center;
+  background-size:auto,14px 14px;
+  box-shadow:0 10px 22px rgba(15,23,42,.04);
+  cursor:pointer;
+}
+.select-input:hover{
+  border-color:#99d5cc;
+  box-shadow:0 12px 24px rgba(15,23,42,.06);
+}
+.select-input option{
+  color:#0f172a;
+  background:#fff;
+}
 .editor{min-height:120px;resize:vertical}
-.actions{display:flex;gap:10px;flex-wrap:wrap}
+.actions{display:flex;gap:16px;flex-wrap:wrap;margin-top:16px}
 .metric,.block{border-radius:16px;background:#fff;border:1px solid #e2e8f0;padding:14px}
 .metric span{font-size:12px;color:#64748b}.metric strong{display:block;margin-top:6px;font-size:20px}
 .block h3{margin:0 0 8px;font-size:14px}.block p{margin:0;font-size:13px;line-height:1.7;color:#334155;white-space:pre-wrap}
@@ -797,5 +1265,5 @@ onMounted(async () => {
 .status{margin-top:12px;border-radius:14px;padding:12px 14px;font-size:13px;line-height:1.5}.status.info{background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe}.status.error{background:#fef2f2;color:#b91c1c;border:1px solid #fecaca}
 .empty{border-radius:16px;padding:16px;background:#fff;border:1px dashed #cbd5e1;color:#64748b;font-size:13px;line-height:1.6}
 @media (max-width:1100px){.growth-layout{grid-template-columns:1fr;height:auto}.workspace{min-height:70vh}}
-@media (max-width:720px){.grid.two{grid-template-columns:1fr}.panel{padding:14px}.panel-scroll{padding:14px}}
+@media (max-width:720px){.grid.two,.suggestion-grid,.scale-grid{grid-template-columns:1fr}.entry-mode-switch{width:100%;display:grid;grid-template-columns:1fr 1fr}.panel{padding:14px}.panel-scroll{padding:14px}}
 </style>

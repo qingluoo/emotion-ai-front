@@ -78,6 +78,17 @@
             {{ msg.role === 'user' ? '我' : 'AI' }}
           </div>
           <div class="bubble">
+            <div v-if="msg.role === 'ai' && msg.ragSources?.length" class="rag-source-list">
+              <div class="rag-source-header">检索依据</div>
+              <div
+                v-for="(source, sourceIdx) in msg.ragSources"
+                :key="`${idx}-${sourceIdx}-${source.fileName}-${source.title}`"
+                class="rag-source-card"
+              >
+                <div class="rag-source-file">{{ source.fileName }}</div>
+                <div class="rag-source-title">{{ source.title }}</div>
+              </div>
+            </div>
             <div class="text markdown-body" v-html="renderMessageContent(msg.content)"></div>
             <div v-if="msg.attachments?.length" class="attachment-list">
               <div
@@ -375,7 +386,8 @@ const createMessage = (role, content) => ({
   role,
   content,
   time: formatTime(),
-  attachments: []
+  attachments: [],
+  ragSources: []
 });
 
 const ensureLastAiMessage = (chatId) => {
@@ -390,7 +402,36 @@ const ensureLastAiMessage = (chatId) => {
   if (!Array.isArray(last.attachments)) {
     last.attachments = [];
   }
+  if (!Array.isArray(last.ragSources)) {
+    last.ragSources = [];
+  }
   return last;
+};
+
+const normalizeRagSource = (doc) => {
+  const metadata = doc?.metadata || {};
+  return {
+    id: doc?.id || '',
+    fileName: doc?.fileName || metadata.filename || metadata.fileName || '未命名文档',
+    title: doc?.title || metadata.title || metadata.chunkTitle || metadata.header || '未命名分片',
+    distance: typeof doc?.distance === 'number'
+      ? doc.distance
+      : typeof metadata.distance === 'number'
+        ? metadata.distance
+        : null
+  };
+};
+
+const dedupeRagSources = (docs = []) => {
+  const map = new Map();
+  docs.forEach((doc) => {
+    const item = normalizeRagSource(doc);
+    const key = `${item.fileName}::${item.title}`;
+    if (!map.has(key)) {
+      map.set(key, item);
+    }
+  });
+  return Array.from(map.values());
 };
 
 const formatFileSize = (base64) => {
@@ -825,6 +866,17 @@ const addAttachmentToAiMessage = (chatId, payload) => {
   saveToLocalStorage();
 };
 
+const setRagSourcesToAiMessage = (chatId, ragDocuments) => {
+  const lastAiMessage = ensureLastAiMessage(chatId);
+  lastAiMessage.ragSources = dedupeRagSources(ragDocuments);
+  lastAiMessage.time = formatTime();
+
+  const list = messagesMap.get(chatId) || [];
+  messagesMap.set(chatId, list);
+  nextTickScroll();
+  saveToLocalStorage();
+};
+
 const startStream = (url, chatId, options = {}) => {
   const {
     eventNames = [],
@@ -960,6 +1012,16 @@ const startChatEventStream = (url, chatId, options = {}) => {
     }
   });
 
+  eventSource.addEventListener('rag', (event) => {
+    if (!event.data) return;
+    try {
+      const payload = JSON.parse(event.data);
+      setRagSourcesToAiMessage(chatId, payload?.ragDocuments || []);
+    } catch (e) {
+      console.error('parse rag event failed', e);
+    }
+  });
+
   eventSource.addEventListener('file', (event) => {
     if (!event.data) return;
     try {
@@ -1016,6 +1078,16 @@ const openEmotionStream = (message, chatId) => {
       appendAiChunk(chatId, payload?.content || '');
     } catch (e) {
       appendAiChunk(chatId, event.data);
+    }
+  });
+
+  eventSource.addEventListener('rag', (event) => {
+    if (!event.data) return;
+    try {
+      const payload = JSON.parse(event.data);
+      setRagSourcesToAiMessage(chatId, payload?.ragDocuments || []);
+    } catch (e) {
+      console.error('parse rag event failed', e);
     }
   });
 
@@ -1507,12 +1579,13 @@ watch(
 const mapConversationToSession = (conversation, index) => {
   const { conversationId, messages, lastUpdateTime } = conversation;
   const list = Array.isArray(messages)
-    ? messages.map((m) => ({
-        role: m.messageType && m.messageType.toLowerCase().includes('user') ? 'user' : 'ai',
-        content: m.content || '',
-        time: formatTimeFromTimestamp(m.timestamp),
-        attachments: []
-      }))
+        ? messages.map((m) => ({
+            role: m.messageType && m.messageType.toLowerCase().includes('user') ? 'user' : 'ai',
+            content: m.content || '',
+            time: formatTimeFromTimestamp(m.timestamp),
+            attachments: [],
+            ragSources: []
+          }))
     : [];
 
   messagesMap.set(conversationId, list);
@@ -1542,7 +1615,8 @@ const loadFromLocalStorage = () => {
           const normalizedValue = Array.isArray(value)
             ? value.map((msg) => ({
                 ...msg,
-                attachments: Array.isArray(msg.attachments) ? msg.attachments : []
+                attachments: Array.isArray(msg.attachments) ? msg.attachments : [],
+                ragSources: Array.isArray(msg.ragSources) ? msg.ragSources : []
               }))
             : [];
           messagesMap.set(key, normalizedValue);
