@@ -538,7 +538,7 @@ const planPeriodOptions = [
   { value: 'quarterly', label: '每季度' }
 ];
 const intensityScaleGuide = [
-  { label: '1-2', text: '情绪强度1-10，基本不影响当前生活。' },
+  { label: '1-2', text: '基本不影响当前生活。' },
   { label: '3-4', text: '有轻微不适，但能维持日常。' },
   { label: '5-6', text: '已影响部分状态，如效率、睡眠、专注或社交。' },
   { label: '7-8', text: '影响明显，情绪持续占据注意力，恢复较困难。' },
