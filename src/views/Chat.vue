@@ -246,6 +246,13 @@ let pcmAudioContext = null;
 let pcmSourceNode = null;
 let pcmProcessorNode = null;
 const BROWSER_TTS_RATE = 1.25;
+const MIN_UPLOAD_AUDIO_BYTES = 2048;
+const REALTIME_SPEECH_STOP_DEBOUNCE_MS = 800;
+const REALTIME_AUTO_SEND_SILENCE_MS = 4000;
+let realtimeSpeechStartedAt = 0;
+let realtimeStopRequested = false;
+let realtimeFinalizedTranscript = '';
+let realtimeSilenceTimer = null;
 
 const isListening = computed(() => voiceState.value === VOICE_STATES.LISTENING);
 const isRecognizing = computed(() => voiceState.value === VOICE_STATES.RECOGNIZING);
@@ -335,6 +342,39 @@ const setVoiceState = (nextState) => {
 const clearCallTranscript = () => {
   callTranscript.interim = '';
   callTranscript.final = '';
+  realtimeFinalizedTranscript = '';
+};
+
+const extractApiErrorMessage = (error, fallbackMessage) => {
+  const message = error?.response?.data?.message || error?.message;
+  return typeof message === 'string' && message.trim() ? message.trim() : fallbackMessage;
+};
+
+const clearRealtimeSilenceTimer = () => {
+  if (realtimeSilenceTimer) {
+    clearTimeout(realtimeSilenceTimer);
+    realtimeSilenceTimer = null;
+  }
+};
+
+const flushRealtimeTranscriptIfReady = async () => {
+  const recognizedText = realtimeFinalizedTranscript.trim();
+  if (!recognizedText) {
+    return;
+  }
+  realtimeStopRequested = false;
+  clearRealtimeSilenceTimer();
+  clearCallTranscript();
+  await autoSendRecognizedText(recognizedText);
+};
+
+const scheduleRealtimeAutoSend = () => {
+  clearRealtimeSilenceTimer();
+  realtimeSilenceTimer = setTimeout(() => {
+    flushRealtimeTranscriptIfReady().catch((e) => {
+      console.error('flush realtime transcript failed', e);
+    });
+  }, REALTIME_AUTO_SEND_SILENCE_MS);
 };
 
 const resetVoiceStateIfQuiet = () => {
@@ -641,6 +681,9 @@ const stopRealtimeAudioCapture = () => {
 };
 
 const stopRealtimeAsrFlow = () => {
+  realtimeStopRequested = false;
+  realtimeSpeechStartedAt = 0;
+  clearRealtimeSilenceTimer();
   stopRealtimeAudioCapture();
   closeRealtimeAsrSocket();
 };
@@ -666,17 +709,23 @@ const setupRealtimeAsrSocket = (chatId) => {
           callTranscript.interim = payload.text || '';
           break;
         case 'final_transcript':
-          callTranscript.final = payload.text || '';
+          callTranscript.final = [callTranscript.final, payload.text || ''].filter(Boolean).join(' ').trim();
+          realtimeFinalizedTranscript = callTranscript.final;
           callTranscript.interim = '';
-          input.value = payload.text || '';
-          autoSendRecognizedText(payload.text || '');
+          input.value = callTranscript.final;
+          if (realtimeStopRequested) {
+            flushRealtimeTranscriptIfReady();
+          }
           break;
         case 'speech_started':
+          clearRealtimeSilenceTimer();
+          realtimeSpeechStartedAt = Date.now();
           setVoiceState(VOICE_STATES.LISTENING);
           break;
         case 'speech_stopped':
-          if (!isThinking.value) {
+          if (!isThinking.value && (!realtimeSpeechStartedAt || Date.now() - realtimeSpeechStartedAt >= REALTIME_SPEECH_STOP_DEBOUNCE_MS)) {
             setVoiceState(VOICE_STATES.RECOGNIZING);
+            scheduleRealtimeAutoSend();
           }
           break;
         case 'error':
@@ -1091,6 +1140,42 @@ const openEmotionStream = (message, chatId) => {
     }
   });
 
+  eventSource.addEventListener('file', (event) => {
+    if (!event.data) return;
+    try {
+      const payload = JSON.parse(event.data);
+      addAttachmentToAiMessage(chatId, payload);
+    } catch (e) {
+      console.error('parse file event failed', e);
+      showNotice('文件加载失败', 'warning');
+    }
+  });
+
+  eventSource.addEventListener('agent_step', (event) => {
+    if (!event.data) return;
+    try {
+      const payload = JSON.parse(event.data);
+      appendAgentStep(chatId, payload?.content || '');
+    } catch (e) {
+      console.error('parse agent_step event failed', e);
+    }
+  });
+
+  eventSource.addEventListener('error', (event) => {
+    let message = '实时对话发生异常';
+    if (event?.data) {
+      try {
+        const payload = JSON.parse(event.data);
+        message = payload?.content || message;
+      } catch (e) {
+        console.error('parse error event failed', e);
+      }
+    }
+    showNotice(message, 'error');
+    closeStream();
+    resetVoiceStateIfQuiet();
+  });
+
   eventSource.addEventListener('audio', (event) => {
     if (!event.data) return;
     try {
@@ -1357,6 +1442,8 @@ const stopMediaStream = () => {
 
 const stopRecording = () => {
   if (callMode.value) {
+    realtimeStopRequested = true;
+    clearRealtimeSilenceTimer();
     sendRealtimeAsrMessage({
       type: 'stop',
       chatId: currentChatId.value
@@ -1420,6 +1507,13 @@ const startRecording = async () => {
       const audioFile = new File([audioBlob], `speech-input.${extension}`, { type: finalMimeType });
       recordingChunks = [];
 
+      if (audioBlob.size < MIN_UPLOAD_AUDIO_BYTES) {
+        showNotice('录音时间太短或没有采集到有效语音，请重试', 'warning');
+        setVoiceState(VOICE_STATES.IDLE);
+        mediaRecorder = null;
+        return;
+      }
+
       try {
         const response = await recognizeSpeech(audioFile);
         const recognizedText = response?.data?.text?.trim() || '';
@@ -1431,7 +1525,7 @@ const startRecording = async () => {
           setVoiceState(VOICE_STATES.IDLE);
         }
       } catch (e) {
-        markErrorState('语音识别失败，请稍后重试');
+        markErrorState(extractApiErrorMessage(e, '语音识别失败，请稍后重试'));
         console.error('语音识别失败', e);
       } finally {
         mediaRecorder = null;
@@ -1451,10 +1545,14 @@ const startRecording = async () => {
 const startVoiceTurn = async () => {
   closeStream();
   stopAudioPlayback();
-  setVoiceState(VOICE_STATES.IDLE);
   if (callMode.value) {
-    clearCallTranscript();
+    stopRealtimeAsrFlow();
+    clearRealtimeSilenceTimer();
+    realtimeStopRequested = false;
+    realtimeSpeechStartedAt = 0;
   }
+  setVoiceState(VOICE_STATES.IDLE);
+  clearCallTranscript();
   recordingTriggeredByPress = true;
   await startRecording();
 };

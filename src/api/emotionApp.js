@@ -30,11 +30,7 @@ export function getChatStreamWithTtsUrl(message, chatId) {
 export function recognizeSpeech(file) {
   const formData = new FormData();
   formData.append('file', file);
-  return http.post('/ai/asr/recognize', formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data'
-    }
-  });
+  return http.post('/ai/asr/recognize', formData);
 }
 
 export function chatWithReport(message, chatId) {
